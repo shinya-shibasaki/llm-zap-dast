@@ -22,8 +22,11 @@
    - `zap.api_url`：既定 `http://localhost:8080`。`api_key_env: ZAP_API_KEY`、`autostart: true`。
    - `authentication.enabled: false`（ログイン処理を検出しても**v1では無効のまま**。要否はメモ
      として提示するが、値は false に保つ）。
-   - `scan`：`spider: true`、`ajax_spider: false`、`playwright: true`、
-     **`active_scan: false`**、`scenario_tests: true`。
+   - `scan`：`spider: true`、`playwright: true`、**`active_scan: false`**（安全既定。検出内容に
+     かかわらず false のまま。有効化は利用者が手動で行う）、`scenario_tests: true`。
+     - `ajax_spider`：**SPA / JS描画依存かどうかを判定して提案する**（下記ヒューリスティック）。
+       SPAと判断できれば `true`、そうでなければ `false`。攻撃は送らず遅くなるだけなので、検出時の
+       自動 true は安全。**推測である旨と根拠を明示**し、利用者が変えられるようにする。
    - `safety`：`require_local_target: true`、**`allow_production: false`**。
    - `exclude.paths`：検出した破壊的エンドポイントを候補として列挙（例：`/logout`、
      `/admin/delete-all`、`/api/reset`）。**推測である旨を明示**し、利用者に取捨選択させる。
@@ -35,6 +38,27 @@
    得てから書く。
 6. 書き出し後、`.gitignore` に `reports/` と `.env` があるか確認する（`references/redaction.md`）。
    認証情報は設定ファイルに書かず、環境変数名で参照する旨を改めて伝える。
+
+## ajax_spider の判定ヒューリスティック
+
+Ajax Spider は実ブラウザでJS描画をクロールするため、SPA/JS依存アプリでは到達範囲が大きく広がる
+一方、そうでないアプリでは遅くなるだけで恩恵が薄い。次を手がかりに `ajax_spider` を提案する。
+
+**`true` を提案（SPA / JS依存の兆候）**：
+- フロントのフレームワーク検出：React / Vue / Angular / Svelte / SolidJS、Next.js / Nuxt / Remix
+  などのクライアント寄り構成（`package.json` の依存、`vite`/`webpack` ビルド）。
+- クライアントサイドルーティング（`react-router`、`vue-router` など）や、単一マウント要素
+  （`<div id="root">` / `#app`）＋JSでの描画。
+- UIがGraphQL/XHR/fetch中心でサーバHTMLをほとんど返さない、APIファーストな作り。
+
+**`false` を維持（サーバレンダリング中心の兆候）**：
+- サーバサイドテンプレート主体（Flask/Django templates、Rails ERB、Laravel Blade、Thymeleaf、
+  素のHTML）で、リンク遷移がHTTPベース。
+- JSフレームワーク依存が無い、または限定的（部分的な補助スクリプト程度）。
+
+判断が曖昧なときは `false`（軽い既定）にし、「SPAなら `true` にすると到達範囲が広がる」旨をメモ
+として添える。いずれの場合も**検出由来か推測かを明示**し、利用者が最終的に選べるようにする。
+（`active_scan` はこの判定の対象外。検出内容にかかわらず既定 false のまま。）
 
 ## 安全の既定（生成物でも維持）
 
