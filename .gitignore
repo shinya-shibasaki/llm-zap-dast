@@ -1,0 +1,16 @@
+# DAST artifacts contain target traffic — never commit them.
+reports/
+.env
+.env.*
+
+# ZAP sessions / exports
+*.session
+*.session.*
+zap-*.raw.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

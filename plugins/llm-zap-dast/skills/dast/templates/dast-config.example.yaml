@@ -1,0 +1,55 @@
+# dast.yaml — 診断対象リポジトリのルートに置く（任意）。
+# Skill がこれを読み込む。値はプラグインに固定で埋め込まれない。
+# 認証情報そのものはここに書かない — 環境変数の「名前」だけを指定する。
+
+target:
+  base_url: http://localhost:3000
+
+  allowed_hosts:
+    - localhost
+    - 127.0.0.1
+
+  source_roots:
+    - src
+
+zap:
+  api_url: http://localhost:8080
+
+  # APIキーは既定では不要（キーなし運用）。
+  # ただし zap.api_url または target.base_url のホストが
+  # localhost / 127.0.0.1 / ::1 以外の場合、キーなし運用は拒否される。
+  # キーを使う場合は、値そのものは書かず環境変数名を指定する。
+  api_key_env: ZAP_API_KEY
+
+# 認証は v1 では実行しない（器と方式定義のみ）。
+# 将来（v2）の primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。
+# ZAP が対応できないログインフロー向けに Playwright ログインを fallback とする。
+# （選定理由：ZAP ネイティブ認証は自動再認証を持つ。Playwright による手動認証
+#   パターンは再認証をサポートしないため、長時間スキャンで不利。）
+authentication:
+  enabled: false
+  method: browser        # browser | playwright（v2で使用。v1では無視）
+  login_url: /login
+  username_env: DAST_USERNAME
+  password_env: DAST_PASSWORD
+
+scan:
+  spider: true
+  ajax_spider: false
+  playwright: true
+  active_scan: false
+  scenario_tests: true
+
+safety:
+  require_local_target: true
+  allow_production: false
+
+exclude:
+  # 除外は Spider / Ajax Spider / Passive / Active / Playwright の全経路に適用する。
+  paths:
+    - /logout
+    - /admin/delete-all
+    - /api/reset
+
+output:
+  directory: reports/dast

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "llm-zap-dast",
+  "description": "ソースコード解析、OWASP ZAP、ブラウザ操作を組み合わせて、開発中の Web アプリケーションに対する DAST を支援する Claude Code プラグイン（LLM 支援型グレーボックス DAST）。",
+  "author": {
+    "name": "shinya-shibasaki",
+    "email": "noreply@example.com"
+  },
+  "repository": "https://github.com/shinya-shibasaki/llm-zap-dast",
+  "license": "MIT",
+  "keywords": ["dast", "security", "owasp-zap", "playwright", "web-security"]
+}

@@ -1,0 +1,42 @@
+# dast.yaml の例 — 診断対象リポジトリのルートにコピーして調整する。
+# 認証情報はここに書かず、環境変数の「名前」だけを参照する。
+
+target:
+  base_url: http://localhost:3000
+  allowed_hosts:
+    - localhost
+    - 127.0.0.1
+  source_roots:
+    - src
+
+zap:
+  api_url: http://localhost:8080
+  # 既定はキーなし。非ローカルのホストにはキーが必須（ここで指定した名前の環境変数を設定する）。
+  api_key_env: ZAP_API_KEY
+
+authentication:
+  enabled: false          # v1 は認証を実行しない（器のみ）
+  method: browser         # browser | playwright（v2）
+  login_url: /login
+  username_env: DAST_USERNAME
+  password_env: DAST_PASSWORD
+
+scan:
+  spider: true
+  ajax_spider: false
+  playwright: true
+  active_scan: false      # 既定OFF。有効化しても工程5のゲートが必要
+  scenario_tests: true
+
+safety:
+  require_local_target: true
+  allow_production: false
+
+exclude:
+  paths:                  # Spider / Ajax / Passive / Active / Playwright に適用
+    - /logout
+    - /admin/delete-all
+    - /api/reset
+
+output:
+  directory: reports/dast

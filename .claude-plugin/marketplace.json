@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "shibasaki-security-tools",
+  "owner": {
+    "name": "shinya-shibasaki",
+    "email": "noreply@example.com"
+  },
+  "description": "Claude Code 向けのセキュリティツール群。OWASP ZAP を用いた LLM 支援型グレーボックス DAST プラグイン llm-zap-dast を配布する。",
+  "plugins": [
+    {
+      "name": "llm-zap-dast",
+      "source": "./plugins/llm-zap-dast",
+      "description": "ソースコード解析、OWASP ZAP、ブラウザ操作を組み合わせて、開発中の Web アプリケーションに対する DAST を支援する Claude Code プラグイン。",
+      "category": "security",
+      "tags": ["dast", "security", "owasp-zap", "web", "playwright"]
+    }
+  ]
+}
