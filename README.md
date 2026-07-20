@@ -71,6 +71,24 @@ claude
 形式は `<plugin-name>@<marketplace-name>` です。ここではマーケットプレイスが
 `shibasaki-security-tools`、プラグインが `llm-zap-dast` です。
 
+（CLI での同等コマンド：`claude plugin install llm-zap-dast@shibasaki-security-tools`）
+
+### インストールスコープ（ユーザー単位／プロジェクト単位）
+
+インストール時に次の3スコープから選べます（**既定はユーザー単位**）。
+
+| スコープ | 範囲 | 保存先 | 共有 |
+| --- | --- | --- | --- |
+| **User**（既定） | 自分の全プロジェクト | ユーザー設定（`~/.claude`） | されない |
+| **Project** | このリポジトリの全共同作業者 | リポジトリの `.claude/settings.json` | される |
+| **Local** | このリポジトリで自分だけ | `.claude/settings.local.json`（個人用） | されない |
+
+CLI でスコープを指定する例：
+
+```bash
+claude plugin install llm-zap-dast@shibasaki-security-tools --scope local
+```
+
 ## Skill の実行
 
 ```text
