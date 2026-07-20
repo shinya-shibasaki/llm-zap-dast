@@ -88,6 +88,7 @@ claude
 | `/llm-zap-dast:dast` | `dast.yaml` を使って工程0→7を実行 |
 | `/llm-zap-dast:dast http://localhost:3000` | 位置引数のURLで `target.base_url` を上書き |
 | `/llm-zap-dast:dast --config dast.yaml` | 設定ファイルを指定 |
+| `/llm-zap-dast:dast --init` | リポジトリ解析から `dast.yaml` の下書きを生成（確認後に書き出し） |
 | `/llm-zap-dast:dast --only <step>` | その工程（0–7）のみ実行 |
 | `/llm-zap-dast:dast --from <step>` | その工程から工程7まで再開 |
 | `/llm-zap-dast:dast --keep-raw` | マスク前の生データを保持（既定：保持しない） |
@@ -100,6 +101,13 @@ claude
 `dast.yaml` を**診断対象リポジトリのルート**に置きます（任意。
 [`examples/dast.yaml`](examples/dast.yaml) 参照）。値は実行時に読み込まれ、プラグインに固定
 埋め込みされません。**認証情報をこのファイルに書かない** — 環境変数の「名前」を参照します。
+
+**手で書くのが大変な場合は生成を支援できます。** `/llm-zap-dast:dast --init` を実行すると、Claude が
+リポジトリを解析して `base_url`（検出したポート）、`source_roots`、破壊的エンドポイントの
+`exclude.paths` 候補などを埋めた `dast.yaml` の下書きを作り、検証したうえで**確認後に書き出します**
+（既存ファイルは無断上書きしません）。また `dast.yaml` が無い状態で普通に実行した場合も、生成を
+提案します。安全既定（`active_scan: false` / `allow_production: false` / ローカル限定）は生成物でも
+維持されます。
 
 ```yaml
 target:

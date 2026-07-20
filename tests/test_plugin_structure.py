@@ -53,7 +53,7 @@ def test_references_and_templates_present():
     tpl = os.path.join(PLUGIN_DIR, "skills", "dast", "templates")
     for name in ("methodology.md", "safety-policy.md", "source-analysis.md",
                  "zap-integration.md", "scenario-testing.md", "redaction.md",
-                 "report-format.md"):
+                 "report-format.md", "config-init.md"):
         assert os.path.isfile(os.path.join(ref, name)), f"missing reference {name}"
     for name in ("dast-config.example.yaml", "target-map.example.md",
                  "scenario-list.example.md", "report.example.md"):

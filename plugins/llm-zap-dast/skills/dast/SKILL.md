@@ -25,6 +25,8 @@ disable-model-invocation: true
 
 - 位置引数のURL（例：`http://localhost:3000`）— `target.base_url` を上書き。
 - `--config <path>` — 設定ファイルのパス（既定：リポジトリ直下の `dast.yaml`）。
+- `--init` — リポジトリ解析から `dast.yaml` の下書きを生成し、確認後に書き出して**停止**する
+  （スキャンは実行しない）。詳細は `references/config-init.md`。
 - `--only <step>` — その工程**のみ**実行して停止。
 - `--from <step>` — その工程**から**工程7まで再開。
 - `--keep-raw` — マスク前の生データを保持する（既定：保持しない）。警告を出すこと。
@@ -68,6 +70,19 @@ disable-model-invocation: true
 
 ---
 
+## 設定生成（`--init` と自動オファー）（`references/config-init.md`）
+
+- `--init` が指定されたら：リポジトリを解析して `dast.yaml` の下書きを生成 → 提示 →
+  `validate_config.py` で検証 → **確認後に書き出して停止**（スキャンは実行しない）。既存
+  `dast.yaml` を無断上書きしない。
+- `--init` なしで、かつ `dast.yaml`（または `--config` 指定先）が**存在しない**場合：工程0で
+  「生成しますか？」と提案する。生成すればそれを使って続行、断れば既定値で続行する。
+
+手順の詳細は `references/config-init.md` に従うこと。生成物でも安全既定
+（`active_scan: false` / `allow_production: false` / `allowed_hosts` はローカル）を維持する。
+
+---
+
 ## 工程0 — 実行条件・安全確認（`references/safety-policy.md`）
 
 この工程はハードゲートです。安全上の失敗があれば、ここから先へ進まないでください。
@@ -81,7 +96,8 @@ disable-model-invocation: true
      疎通／ここでActive Scanを実施してよいか／出力先／認証の要否（v1では認証を実行せず、要否のみ
      記録）／除外すべきURL・機能。
 3. 設定が不足・不十分な場合：**推測せず、Active Scanを開始しない。** 不足項目を列挙する。
-   ギャップが安全に関わるなら停止する。
+   ギャップが安全に関わるなら停止する。`dast.yaml` が存在しない場合は、上記「設定生成」に従って
+   生成を提案する（断られたら既定値で続行）。
 4. チェックポイントのサマリを出力して継続する。
 
 ---
