@@ -108,7 +108,15 @@ disable-model-invocation: true
 
 ## 工程3 — ZAPによる初期探索（`references/zap-integration.md`）
 
-前提が満たせない（ZAP不達）→ スキップ（fail-soft）、理由を記録。満たせる場合：
+**ZAPの起動確認／自動起動**：まず `zap_control.py status` で疎通を見る。
+- 到達可能 → 既存のZAPを使う（自動起動しない、後で停止もしない）。
+- 不達 かつ `zap.autostart` 有効（既定true）→
+  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_control.py --config <path> start --json` を実行。
+  起動は必ず 127.0.0.1。`started: true` なら**「スキルが起動した」フラグを立てる**（後始末で停止する）。
+- 不達 かつ 自動起動が無効／ZAPが見つからない／起動失敗 → **スキップ（fail-soft）**。手動起動コマンド
+  （`references/zap-integration.md` 参照）を案内し、理由を `run.log` とレポートに記録。
+
+ZAPが利用可能になったら：
 
 1. 対象URLをZAPへ登録。
 2. **ZAP Contextを作成し、スコープ制御を適用** — include正規表現を `allowed_hosts` に限定；
@@ -193,3 +201,10 @@ ZAPアラート＋シナリオ結果を分析。次を分ける：
 
 途中で redaction 工程がスキップされたり `--keep-raw` が指定された場合は、マスク前データが含まれ得る
 旨を `run.log` とレポートの両方で強く警告する。
+
+## 実行後の後始末（クリーンアップ）
+
+工程7の後、または途中で中断する場合も、**スキルがZAPを起動していたとき（工程3のフラグ）だけ**、
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_control.py --config <path> shutdown --json` で停止し、
+`run.log` に記録する。**利用者が事前に起動していたZAPは停止しない**（フラグが立っていなければ何もしない）。
+

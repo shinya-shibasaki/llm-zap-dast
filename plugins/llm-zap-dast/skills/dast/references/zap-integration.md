@@ -27,6 +27,23 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 
 方法を場当たり的に変えないこと。採用した方法とその理由を `run.log` に残す。
 
+### ZAPの自動起動（`zap.autostart`、既定true）
+
+既存の起動済みZAPを優先します。ZAPが不達で `zap.autostart` が有効なとき、スキルは
+`scripts/zap_control.py start` でローカルZAPを起動できます。
+
+- 起動は**必ず `-host 127.0.0.1`**（ループバック限定）。`0.0.0.0` にはしない。`zap.start_command`
+  で 0.0.0.0 バインドを指定しても拒否する。
+- キーなし運用はローカル限定のまま（非ローカルなら `validate_config.py` が拒否）。
+- 探索順：`zap.start_command`（明示指定）→ PATH上のバイナリ（`zap.sh` / `zap` /
+  `owasp-zap` / `zaproxy`）→ `zap.docker`（明示イメージ、ホスト側は 127.0.0.1 にのみ公開）。
+- 見つからない／起動失敗 → **fail-soft でスキップ**し、下記の手動起動を案内する。
+- **ライフサイクル**：スキルが起動したインスタンス**だけ**を、実行後に
+  `zap_control.py shutdown`（ZAPの `/JSON/core/action/shutdown/`）で停止する。利用者が事前に
+  起動していたZAPには触れない。
+- **WSLの注意**：ZAPがWindows側にある構成では、WSL内のスキルからは起動できない。この場合は
+  従来どおり手動起動が必要（`zap.autostart` を実質スキップし、案内にフォールバック）。
+
 ### 主要APIエンドポイント（ZAP 2.14+；利用中のバージョンで確認すること）
 
 - Context：`/JSON/context/action/newContext/`、`.../includeInContext/`、

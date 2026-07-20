@@ -114,3 +114,15 @@ def test_exclude_absolute_url_fails():
     cfg = _valid_cfg()
     cfg["exclude"]["paths"] = ["http://localhost:3000/logout"]
     assert any("absolute URL" in e for e in _errors(cfg))
+
+
+def test_autostart_command_all_interfaces_fails():
+    cfg = _valid_cfg()
+    cfg["zap"]["start_command"] = "zap.sh -daemon -host 0.0.0.0 -port 8080"
+    assert any("0.0.0.0" in e for e in _errors(cfg))
+
+
+def test_autostart_non_bool_fails():
+    cfg = _valid_cfg()
+    cfg["zap"]["autostart"] = "yes"
+    assert any("autostart" in e for e in _errors(cfg))

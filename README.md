@@ -37,7 +37,9 @@ claude
 以下は利用者側で用意済みであることを前提とします：
 
 - **Claude Code**（`/plugin` コマンドが使える新しめのバージョン）。
-- **OWASP ZAP** をデーモンモードで起動（`zap.sh -daemon -host 127.0.0.1 -port 8080`）。
+- **OWASP ZAP** がインストール済みであること。**手動での事前起動は任意**です — 未起動の場合、
+  スキルが `zap.autostart`（既定 true）で `127.0.0.1` にローカルZAPを自動起動します（下記参照）。
+  自分で起動しておく場合：`zap.sh -daemon -host 127.0.0.1 -port 8080`。
 - **Python 3.8+** と `PyYAML`・`requests`（`pip install pyyaml requests`）。
 - **診断対象のWebアプリケーション**がローカルで稼働していること。
 - **Playwright**（任意。無ければPlaywright工程はスキップされる — fail-soft）。
@@ -130,6 +132,13 @@ output:
 
 要点：
 
+- **ZAPの自動起動（`zap.autostart`、既定 true）。** ZAPが未起動のとき、スキルがローカルZAPを
+  `127.0.0.1` で自動起動します。既に起動済みのZAPがあればそれを使い、自動起動しません。ZAPが
+  見つからない/起動に失敗した場合は、手動起動を案内してスキップします（fail-soft）。**スキルが
+  起動したインスタンスだけ**を診断後に停止し、あなたが起動していたZAPには触れません。起動は必ず
+  `127.0.0.1` に限定され、`start_command` で `0.0.0.0` バインドを指定しても拒否されます。無効化
+  するには `zap.autostart: false`。任意で `zap.start_command` や `zap.docker` を指定できます。
+  なお **WSLからWindows側のZAPは自動起動できません**（手動起動が必要）。
 - **キーなしZAPはローカル限定。** `zap.api_url` または `target.base_url` のホストが
   `localhost` / `127.0.0.1` / `::1` 以外の場合、キーなし運用は**拒否**されます。キーを使うには
   `api_key_env` で指定した環境変数を設定します。

@@ -134,6 +134,19 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
             "discovery and bypasses the Active Scan gate. Use 'protect' (default)."
         )
 
+    # --- ZAP autostart -------------------------------------------------------
+    autostart = _get(cfg, "zap", "autostart", default=True)
+    if not isinstance(autostart, bool):
+        errors.append("zap.autostart must be a boolean (true/false)")
+    start_command = _get(cfg, "zap", "start_command")
+    if start_command is not None:
+        joined = start_command if isinstance(start_command, str) else " ".join(map(str, start_command))
+        if "0.0.0.0" in joined:
+            errors.append(
+                "zap.start_command binds 0.0.0.0 (all interfaces). An auto-started ZAP "
+                "must bind 127.0.0.1. Refusing."
+            )
+
     # --- Active Scan safety --------------------------------------------------
     active_scan = bool(_get(cfg, "scan", "active_scan", default=False))
     if active_scan:

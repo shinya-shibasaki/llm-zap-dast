@@ -14,6 +14,15 @@ zap:
   # 既定はキーなし。非ローカルのホストにはキーが必須（ここで指定した名前の環境変数を設定する）。
   api_key_env: ZAP_API_KEY
 
+  # ZAP が未起動のとき、スキルがローカルZAPを起動するか（既定 true）。
+  # 起動は必ず 127.0.0.1 に限定。見つからない/失敗時は手動起動を案内（fail-soft）。
+  # スキルが起動したインスタンスだけを診断後に停止する。
+  autostart: true
+  # 任意: 起動コマンドを明示指定（0.0.0.0 バインドは拒否）。
+  # start_command: "zap.sh -daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true"
+  # 任意: バイナリの代わりに Docker イメージで起動する。
+  # docker: "ghcr.io/zaproxy/zaproxy:stable"
+
 authentication:
   enabled: false          # v1 は認証を実行しない（器のみ）
   method: browser         # browser | playwright（v2）

@@ -168,6 +168,25 @@ def run_checks(cfg, config_path):
                     "host; try the Windows host IP or run ZAP inside WSL.")
         checks.append(_check("zap_reachable", "ok" if ok else "warn",
                              f"{zap_api_url} -> {detail}{hint}"))
+        # When ZAP is not reachable, report whether the skill can auto-start it.
+        if not ok:
+            try:
+                import zap_control  # sibling script
+                det = zap_control.detect(cfg or {})
+                if not det["autostart_enabled"]:
+                    checks.append(_check("zap_autostart", "skip",
+                                         "zap.autostart disabled; start ZAP manually"))
+                elif det["launchable"]:
+                    checks.append(_check(
+                        "zap_autostart", "ok",
+                        f"can auto-start ZAP ({det['method']}); the skill will launch it "
+                        f"on 127.0.0.1"))
+                else:
+                    checks.append(_check("zap_autostart", "warn",
+                                         det.get("error") or "cannot auto-start ZAP"))
+            except Exception as exc:  # noqa: BLE001
+                checks.append(_check("zap_autostart", "unknown",
+                                     f"autostart detection failed: {exc}"))
     else:
         checks.append(_check("zap_reachable", "skip", "zap.api_url not set"))
 

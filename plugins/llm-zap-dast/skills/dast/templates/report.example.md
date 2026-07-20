@@ -15,9 +15,9 @@ _LLM支援型グレーボックスDAST（ソース解析＋OWASP ZAP＋ブラウ
 - 開始 / 終了：<...>  ・ run-id：<...>
 
 ## 4. 使用したツール
-- OWASP ZAP <バージョン>、モード：Protected
+- OWASP ZAP <バージョン>、モード：Protected（起動：<手動 / スキルが自動起動>）
 - Playwright：<使用 / 利用不可>
-- スクリプト：validate_config.py、check_environment.py、redact.py
+- スクリプト：validate_config.py、check_environment.py、redact.py、zap_control.py
 
 ## 5. 実行した診断工程（スキップ＋理由を含む）
 | 工程 | 状態 | スキップ理由 |
