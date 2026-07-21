@@ -148,7 +148,7 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
             )
 
     # --- Active Scan safety --------------------------------------------------
-    active_scan = bool(_get(cfg, "scan", "active_scan", default=False))
+    active_scan = bool(_get(cfg, "scan", "active_scan", default=True))
     if active_scan:
         if not allowed_set:
             errors.append("scan.active_scan is true but target.allowed_hosts is empty")

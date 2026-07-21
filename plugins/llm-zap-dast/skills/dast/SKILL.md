@@ -83,7 +83,8 @@ disable-model-invocation: true
   「生成しますか？」と提案する。生成すればそれを使って続行、断れば既定値で続行する。
 
 手順の詳細は `references/config-init.md` に従うこと。生成物でも安全既定
-（`active_scan: false` / `allow_production: false` / `allowed_hosts` はローカル）を維持する。
+（`allow_production: false` / `allowed_hosts` はローカル）を維持する（`active_scan` は既定ON。
+実行時は工程5のゲート＋明示確認が必須）。
 
 ---
 
@@ -173,7 +174,7 @@ ZAPが利用可能になったら：
 
 **次のすべてが成立する場合のみ** Active Scanを実行：
 - 対象環境が許可されている／対象ホストが `allowed_hosts` に含まれる／
-  `scan.active_scan: true` が明示的に設定されている／危険なURLが除外されている／
+  `scan.active_scan` が true（既定ON。`false` で明示的に無効化されていない）／危険なURLが除外されている／
   本番でない、または明確な許可（`safety.allow_production`）がある。
 
 実行前に、次を表示し**利用者の明示的な確認を取る**：対象URL/ホスト、除外URL、使用するZAP

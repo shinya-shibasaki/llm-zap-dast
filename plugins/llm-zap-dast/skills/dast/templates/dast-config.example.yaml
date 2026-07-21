@@ -47,7 +47,7 @@ scan:
   spider: true
   ajax_spider: false
   playwright: true
-  active_scan: false
+  active_scan: true
   scenario_tests: true
 
 safety:

@@ -34,7 +34,7 @@ scan:
   spider: true
   ajax_spider: false
   playwright: true
-  active_scan: false      # 既定OFF。有効化しても工程5のゲートが必要
+  active_scan: true       # 既定ON。実行時は工程5のゲート＋明示確認が必須
   scenario_tests: true
 
 safety:

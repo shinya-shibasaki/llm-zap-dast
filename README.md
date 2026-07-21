@@ -131,8 +131,8 @@ claude plugin install llm-zap-dast@shibasaki-security-tools --scope local
 リポジトリを解析して `base_url`（検出したポート）、`source_roots`、破壊的エンドポイントの
 `exclude.paths` 候補などを埋めた `dast.yaml` の下書きを作り、検証したうえで**確認後に書き出します**
 （既存ファイルは無断上書きしません）。また `dast.yaml` が無い状態で普通に実行した場合も、生成を
-提案します。安全既定（`active_scan: false` / `allow_production: false` / ローカル限定）は生成物でも
-維持されます。
+提案します。安全既定（`allow_production: false` / ローカル限定）は生成物でも維持されます
+（`active_scan` は既定ON。ただし実行時は工程5のゲート＋明示確認が必須です）。
 
 ```yaml
 target:
@@ -152,7 +152,7 @@ scan:
   spider: true
   ajax_spider: false
   playwright: true
-  active_scan: false              # 既定OFF。有効化しても工程5のゲートが必要
+  active_scan: true               # 既定ON。実行時は工程5のゲート＋明示確認が必須
   scenario_tests: true
 safety:
   require_local_target: true
@@ -220,8 +220,9 @@ python3 plugins/llm-zap-dast/scripts/redact.py < some-zap-export.json > masked.j
 
 - 診断対象は `allowed_hosts` のホストのみ。スコープはプロンプトだけでなく、run単位の
   **ZAP Context** で担保します。
-- **Active Scan は既定OFF**。設定＋安全チェックによるゲートで制御し、実行前に確認を取ります。
-  このゲートは**ZAPのモードとは独立**です。
+- **Active Scan は既定ON**ですが、工程5のゲート（設定＋安全チェック）を満たし、**かつ**実行前に
+  利用者の明示的な確認を取れた場合のみ実行します。無確認では走りません。このゲートは**ZAPの
+  モードとは独立**です。
 - ZAPは **Protectedモード**で動作。**ATTACKモードは禁止**で、設定検証で拒否します。
 - **本番は既定で拒否**（`safety.allow_production: false`）。
 - **キーなし＋非ローカルは拒否**。秘匿情報（Cookie/Authorization/トークン/JWT/PII）は既定で

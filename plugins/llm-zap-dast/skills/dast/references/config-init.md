@@ -22,8 +22,8 @@
    - `zap.api_url`：既定 `http://localhost:8080`。`api_key_env: ZAP_API_KEY`、`autostart: true`。
    - `authentication.enabled: false`（ログイン処理を検出しても**v1では無効のまま**。要否はメモ
      として提示するが、値は false に保つ）。
-   - `scan`：`spider: true`、`playwright: true`、**`active_scan: false`**（安全既定。検出内容に
-     かかわらず false のまま。有効化は利用者が手動で行う）、`scenario_tests: true`。
+   - `scan`：`spider: true`、`playwright: true`、**`active_scan: true`**（既定ON。検出内容に
+     かかわらず true。実行時は工程5のゲート＋明示確認が必須で、無確認では走らない）、`scenario_tests: true`。
      - `ajax_spider`：**SPA / JS描画依存かどうかを判定して提案する**（下記ヒューリスティック）。
        SPAと判断できれば `true`、そうでなければ `false`。攻撃は送らず遅くなるだけなので、検出時の
        自動 true は安全。**推測である旨と根拠を明示**し、利用者が変えられるようにする。
@@ -58,12 +58,12 @@ Ajax Spider は実ブラウザでJS描画をクロールするため、SPA/JS依
 
 判断が曖昧なときは `false`（軽い既定）にし、「SPAなら `true` にすると到達範囲が広がる」旨をメモ
 として添える。いずれの場合も**検出由来か推測かを明示**し、利用者が最終的に選べるようにする。
-（`active_scan` はこの判定の対象外。検出内容にかかわらず既定 false のまま。）
+（`active_scan` はこの判定の対象外。検出内容にかかわらず既定 true。）
 
 ## 安全の既定（生成物でも維持）
 
 - 秘匿情報（パスワード/トークン/キー）を設定ファイルに書かない。環境変数名のみ。
-- `active_scan: false` / `allow_production: false` を生成物の既定として維持する。
+- `active_scan: true`（既定ON。実行時ゲートで担保）／`allow_production: false` を生成物の既定として維持する。
 - `allowed_hosts` はローカルを既定とし、非ローカルを勝手に足さない。
 
 ## 生成後の流れ
