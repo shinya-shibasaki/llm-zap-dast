@@ -1,5 +1,5 @@
 ---
-name: DAST (LLM + OWASP ZAP)
+name: dast
 description: 現在のリポジトリ内のWebアプリに対し、ソース解析＋OWASP ZAP＋ブラウザ操作でLLM支援型グレーボックスDASTを実施する。手動実行のみ・自動起動しない。
 disable-model-invocation: true
 ---
