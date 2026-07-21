@@ -40,15 +40,22 @@ claude
 - **OWASP ZAP** がインストール済みであること。**手動での事前起動は任意**です — 未起動の場合、
   スキルが `zap.autostart`（既定 true）で `127.0.0.1` にローカルZAPを自動起動します（下記参照）。
   自分で起動しておく場合：`zap.sh -daemon -host 127.0.0.1 -port 8080`。
-- **Python 3.8+** と `PyYAML`・`requests`（`pip install pyyaml requests`）。
+- **Python 3.8+** とプラグインが使う Python ライブラリ。次でインストールします：
+
+  ```bash
+  python3 -m pip install --user --break-system-packages pyyaml requests playwright
+  python3 -m playwright install chromium   # Playwright のブラウザ本体
+  ```
+
+  （PEP 668 の制約が無い環境では `--break-system-packages` は不要です。）
 - **診断対象のWebアプリケーション**がローカルで稼働していること。
-- **Playwright**（任意。無ければPlaywright工程はスキップされる — fail-soft）。
 
 ### 追加依存の理由
 
-`PyYAML` は `dast.yaml` の解析に、`requests` は ZAP REST API の駆動と疎通確認に使います
-（`requests` が無い場合スクリプトはHTTPを `urllib` にフォールバックしますが、`requests` を推奨）。
-これ以外のサードパーティ依存はありません。
+`PyYAML` は `dast.yaml` の解析（必須）、`requests` は ZAP REST API の駆動と疎通確認（無い場合は
+`urllib` に自動フォールバックするが推奨）、`playwright` は工程4/6 のブラウザ操作に使います
+（Playwright が無ければ工程4は fail-soft でスキップされます）。これ以外のサードパーティ依存は
+ありません。
 
 ## Marketplace の登録（GitHubから）
 
