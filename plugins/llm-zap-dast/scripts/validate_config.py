@@ -21,6 +21,13 @@ from urllib.parse import urlparse
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# Authentication method vocabulary. 'auto' means the LLM resolves the concrete method from
+# the target before zap_auth.py is called; it is a valid config value but never reaches the
+# script.
+AUTH_METHODS = {"auto", "browser", "form", "json", "basic", "script"}
+VERIFY_METHODS = {"auto", "url", "indicator"}
+SESSION_METHODS = {"auto", "cookie", "header", "script"}
+
 
 def _load_yaml(path: str):
     try:
@@ -57,6 +64,35 @@ def _is_local(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _norm_path(p) -> str | None:
+    """Normalise a config path/URL to a leading-slash path with no trailing slash."""
+    if not p:
+        return None
+    p = str(p)
+    if "://" in p:
+        try:
+            p = urlparse(p).path or "/"
+        except Exception:  # noqa: BLE001
+            pass
+    if not p.startswith("/"):
+        p = "/" + p
+    return p.rstrip("/") or "/"
+
+
+def _covered_by_excludes(path, exclude_paths) -> str | None:
+    """Return the exclude entry that swallows `path`, or None. Conservative prefix match."""
+    np = _norm_path(path)
+    if np is None:
+        return None
+    for e in exclude_paths or []:
+        ne = _norm_path(e)
+        if ne is None:
+            continue
+        if ne == "/" or np == ne or np.startswith(ne + "/"):
+            return e
+    return None
 
 
 def _get(d, *keys, default=None):
@@ -163,16 +199,75 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                 "dangerous URLs need excluding before running Active Scan."
             )
 
-    # --- authentication coherence (v1 does not run auth, but config must match) -
-    if bool(_get(cfg, "authentication", "enabled", default=False)):
+    # --- authentication coherence -------------------------------------------
+    auth = _get(cfg, "authentication", default={}) or {}
+    if isinstance(auth, dict) and bool(auth.get("enabled", False)):
+        # Credentials must be environment-variable NAMES, never literal values in the file.
+        for literal_key in ("username", "password"):
+            if literal_key in auth:
+                errors.append(
+                    f"authentication.{literal_key} is set with a literal value. Never put "
+                    f"credentials in the config; use authentication.{literal_key}_env with an "
+                    f"environment variable NAME instead."
+                )
         for field in ("username_env", "password_env"):
-            if not _get(cfg, "authentication", field):
+            if not auth.get(field):
                 errors.append(
                     f"authentication.enabled is true but authentication.{field} "
                     f"(an environment variable NAME) is not set"
                 )
-        if not _get(cfg, "authentication", "login_url"):
+        if not auth.get("login_url"):
             warnings.append("authentication.enabled is true but login_url is not set")
+
+        # Method vocabularies. 'auto' is valid config; the LLM resolves it before the script.
+        method = auth.get("method")
+        if method is not None and str(method).lower() not in AUTH_METHODS:
+            errors.append(
+                f"authentication.method {method!r} is not one of {sorted(AUTH_METHODS)}"
+            )
+        vmethod = _get(auth, "verification", "method")
+        if vmethod is not None and str(vmethod).lower() not in VERIFY_METHODS:
+            errors.append(
+                f"authentication.verification.method {vmethod!r} is not one of "
+                f"{sorted(VERIFY_METHODS)}"
+            )
+        smethod = _get(auth, "session_management", "method")
+        if smethod is not None and str(smethod).lower() not in SESSION_METHODS:
+            errors.append(
+                f"authentication.session_management.method {smethod!r} is not one of "
+                f"{sorted(SESSION_METHODS)}"
+            )
+
+        # Lockout avoidance: a positive attempt cap.
+        max_attempts = auth.get("max_attempts")
+        if max_attempts is not None and (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or max_attempts < 1
+        ):
+            errors.append("authentication.max_attempts must be a positive integer")
+
+        # Auth-critical URLs must not be swallowed by exclude.paths (auth/re-auth would break).
+        excl = _get(cfg, "exclude", "paths", default=[]) or []
+        excl = excl if isinstance(excl, list) else []
+        for label, val in (
+            ("authentication.login_url", auth.get("login_url")),
+            ("authentication.verification.verification_url",
+             _get(auth, "verification", "verification_url")),
+        ):
+            hit = _covered_by_excludes(val, excl) if val else None
+            if hit is not None:
+                errors.append(
+                    f"{label} ({val!r}) is covered by exclude.paths entry {hit!r}; "
+                    f"authentication needs to reach it. Remove the overlap."
+                )
+
+        # Authenticated Active Scan is an ADDITIONAL gate on top of scan.active_scan.
+        if bool(auth.get("active_scan", False)) and not active_scan:
+            warnings.append(
+                "authentication.active_scan is true but scan.active_scan is false; "
+                "authenticated Active Scan requires BOTH gates true (and step-5 confirmation)."
+            )
 
     # --- exclude path form ---------------------------------------------------
     exclude_paths = _get(cfg, "exclude", "paths", default=[]) or []

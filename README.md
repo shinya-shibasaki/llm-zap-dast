@@ -143,11 +143,15 @@ zap:
   api_url: http://localhost:8080
   api_key_env: ZAP_API_KEY        # 既定はキーなし。下記のルール参照
 authentication:
-  enabled: false                  # v1 は認証を実行しない（器のみ）
-  method: browser
+  enabled: false                  # true で認証付きDAST（best-effort）
+  method: auto                    # auto | browser | form | json | basic | script
   login_url: /login
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
+  max_attempts: 3
+  verification: { method: auto }  # 認証確認（差分でチェック）
+  session_management: { method: auto }
+  active_scan: false              # 認証付きActive Scanの追加ゲート（既定OFF）
 scan:
   spider: true
   ajax_spider: false
@@ -177,8 +181,14 @@ output:
   `api_key_env` で指定した環境変数を設定します。
 - **`exclude.paths` は全経路に適用**されます — Spider、Ajax Spider、Passive、Active、Playwright。
   `/logout` はGETで到達し得るため、除外が重要です。
-- **認証はv1では未実装。** `authentication` ブロックは器と方式定義のみで、Skillは認証の要否を記録
-  しますが、ログインは行いません。
+- **認証付きDAST（best-effort）。** `authentication.enabled: true` で、工程2.5がZAPの認証機能を
+  使ってログインし、**差分で「本当に認証できたか」を確認**してから認証後の探索/スキャン/シナリオ
+  診断に進みます。primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）、ZAPが扱えない
+  ログインは Playwright を fallback。**任意アプリでの認証成功は保証しません**（失敗は成功と扱わず
+  「未実施」と記録）。**認証情報は環境変数名のみ**を書き、値は成果物・ログに出しません。ZAP User に
+  残る資格情報は run 後に削除します。**対象は原則、自分が所有する使い捨てのローカル脆弱アプリを想定
+  しており、本番・現実の稼働アプリには向けません。** 認証付き Active Scan は `scan.active_scan` と
+  `authentication.active_scan` の**両方 true ＋ 工程5の明示確認**で実行します。
 
 ## ローカル開発
 
@@ -211,7 +221,8 @@ python -m pytest tests/
 ```bash
 python3 plugins/llm-zap-dast/scripts/validate_config.py --config examples/dast.yaml
 python3 plugins/llm-zap-dast/scripts/check_environment.py --config examples/dast.yaml --json
-python3 plugins/llm-zap-dast/scripts/redact.py < some-zap-export.json > masked.json
+python3 plugins/llm-zap-dast/scripts/redact.py --fields user_password < some-zap-export.json > masked.json
+python3 plugins/llm-zap-dast/scripts/zap_auth.py --config examples/dast.yaml detect-capabilities --json
 ```
 
 ## 安全対策
@@ -243,6 +254,7 @@ reports/dast/<run-id>/
 ├── environment-check.json
 ├── target-map.md
 ├── coverage-analysis.md
+├── authentication.md      # 認証付きDAST時のみ（マスク済み）
 ├── zap-alerts.json        # マスク済み
 ├── scenarios.md
 ├── findings.md
@@ -259,11 +271,15 @@ reports/dast/<run-id>/
 IP（WSLの既定ゲートウェイなど）を使うか、WSL内でZAPを起動してください。環境チェックは接続失敗時に
 このヒントを表示します。
 
-## v1では未実装
+## 対象外 / 制約
 
-- 認証 / ログイン（器と方式定義のみ — 実行は**しない**）。
+- **認証は best-effort。** 任意アプリでの認証成功は保証しません。MFA / SSO / OAuth / SAML /
+  CAPTCHA は自動化対象外。単一ユーザー設定のため、複数アカウントが必要な水平IDOR・水平権限昇格は
+  「未実施」として記録します（実装済みのように扱いません）。
+- **対象は使い捨てのローカル脆弱アプリを前提**。本番・現実の稼働アプリには向けません
+  （ローカル限定レールで構造的に本番を拒否）。
 - GUI / Web管理画面 / 外部データベース。
 - 独自MCPサーバー / 複雑なサブエージェント。
 - CI/CD統合 / 本番環境診断 / 自動更新。
 
-これらは初期バージョンでは意図的に対象外です。
+これらは意図的に対象外です。

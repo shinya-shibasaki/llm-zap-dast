@@ -58,6 +58,24 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 - データ：`/JSON/core/view/urls/`、`/JSON/core/view/messages/`（HTTP履歴）、
   `/JSON/core/view/alerts/` または `/JSON/alert/view/alerts/`
 - Proxy：ブラウザのHTTP(S)プロキシを `http://<zap-host>:<zap-port>` に向ける。
+- 認証（工程2.5・`references/authentication.md`）：
+  `/JSON/authentication/view/getSupportedAuthenticationMethods/`、
+  `.../action/setAuthenticationMethod/`、`.../setLoggedInIndicator/`、`.../setLoggedOutIndicator/`；
+  `/JSON/sessionManagement/action/setSessionManagementMethod/`；
+  `/JSON/users/action/newUser/`、`.../setAuthenticationCredentials/`、`.../removeUser/`；
+  `/JSON/forcedUser/action/setForcedUser/`、`.../setForcedUserModeEnabled/`；
+  User指定スキャン：`/JSON/spider/action/scanAsUser/`、`/JSON/ajaxSpider/action/scanAsUser/`、
+  `/JSON/ascan/action/scanAsUser/`（**認証付きActive Scanは二重ゲート＋確認が前提**）。
+  **Browser Based Authentication は ZAP 2.16.1+ が必要。** 利用可否は実行時に
+  `zap_auth.py detect-capabilities` で確認する（バージョン差を吸収）。
+
+### 認証操作は `zap_auth.py` に寄せる（判断しない薄いラッパ）
+
+認証の Context/方式/セッション/検証/User 設定、User指定スキャン、teardown は
+`scripts/zap_auth.py` の各コマンドで行う。**LLMが設定値を判断し、スクリプトは反映するだけ。**
+`configure-authentication` は `method: auto` を拒否（LLMが具体方式へ解決してから渡す）、
+`test-authentication` は合否ではなく**生の証拠**を返す、`active-scan-as-user` は `--gate-passed`
+を要求する。詳細は `references/authentication.md`。
 
 ## ZAP動作モード
 

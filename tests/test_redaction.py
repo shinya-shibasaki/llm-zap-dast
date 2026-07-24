@@ -66,3 +66,32 @@ def test_non_secret_preserved():
 def test_output_is_json_serializable():
     out = redact.redact(_sample())
     json.dumps(out)  # must not raise
+
+
+def test_username_value_masked():
+    # Auth adds a credential-bearing login body every run; the username value must not survive.
+    out = redact.redact(_sample())
+    assert "alice" not in _flatten(out)
+
+
+def test_nonstandard_password_field_masked():
+    # A leading prefix (user_password / login_password) must still be caught.
+    sample = {"body": "user_password=hunter2&login_password=s3cr3t&csrf=abc"}
+    blob = _flatten(redact.redact(sample))
+    assert "hunter2" not in blob
+    assert "s3cr3t" not in blob
+
+
+def test_extra_login_fields_masked():
+    # Caller passes the app's actual login field names discovered from source.
+    sample = {"body": "acct=alice&secretpin=1234"}
+    blob = _flatten(redact.redact(sample, fields=["acct", "secretpin"]))
+    assert "alice" not in blob
+    assert "1234" not in blob
+
+
+def test_extra_fields_default_noop():
+    # No extra fields -> behaves exactly as before (backward compat).
+    a = redact.redact(_sample())
+    b = redact.redact(_sample(), fields=[])
+    assert a == b

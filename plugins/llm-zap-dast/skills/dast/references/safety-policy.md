@@ -48,6 +48,25 @@ fail-soft は「機能が欠けている」への答えです。「安全を担�
 
 曖昧な点があれば ⇒ Passive Scanまでで停止。
 
+**認証付き Active Scan**（`authentication.enabled` かつ認証成功時）は上記に加え、**二重ゲート**：
+`scan.active_scan` **かつ** `authentication.active_scan` が true、かつ工程5確認を通ること
+（`zap_auth.py active-scan-as-user` は `--gate-passed` を要求）。
+
+## 認証（認証付きDAST時の固定ルール・`references/authentication.md`）
+
+認証は best-effort だが、次は **LLMの都度判断に委ねず固定**（安全と、実験結果の妥当性のため）：
+
+1. **認証情報は環境変数「名」からのみ**。設定に平文の資格情報を書かない（`validate_config.py` が
+   拒否）。**値を run.log・stdout・stderr・成果物・スクショ・Playwright trace に出さない。**
+2. **ZAP User の資格情報は削除で対処**（redaction では消せない）。run 終了時と中断時に必ず
+   `clear-authentication`。ZAP セッションをリポジトリ配下に置かない。
+3. **認証成功が曖昧なら認証済みとして扱わない。** 確認は**差分必須**（指標が認証時に有り・未認証時に
+   無し。ステータス／存在のみで合格にしない）。身元依存のプローブは意図したユーザーかも確認。
+4. **`max_attempts` 枯渇・認証失効 → 認証部分を停止**（fail-soft で未認証は継続、静かに匿名継続しない）。
+5. **ログアウト誘発プローブ中は自動再認証（forced-user）をOFF**（ロックアウト＝可用性影響を避ける）。
+6. **未ゲート／未認証のスキャン前に forced-user を明示OFF**（Context単位のため放置すると結果が濁る）。
+7. **`login_url`/`verification_url` を `exclude.paths` で塞がない**（認証・再認証が壊れる。検証で拒否）。
+
 ## 安全がどこで担保されるか
 
 多層防御 — SKILLのプロンプトだけに依存しない：

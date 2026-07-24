@@ -103,6 +103,76 @@ def test_auth_enabled_missing_env_fails():
     assert any("password_env" in e for e in errs)
 
 
+def _auth_cfg():
+    cfg = _valid_cfg()
+    cfg["authentication"] = {
+        "enabled": True,
+        "method": "auto",
+        "login_url": "/login",
+        "username_env": "DAST_USERNAME",
+        "password_env": "DAST_PASSWORD",
+        "max_attempts": 3,
+        "verification": {"method": "auto", "verification_url": "/account"},
+        "session_management": {"method": "auto"},
+        "active_scan": False,
+    }
+    return cfg
+
+
+def test_full_auth_config_passes():
+    assert _errors(_auth_cfg()) == []
+
+
+def test_auth_plaintext_credentials_rejected():
+    cfg = _auth_cfg()
+    cfg["authentication"]["password"] = "hunter2"
+    cfg["authentication"]["username"] = "alice"
+    errs = _errors(cfg)
+    assert any("authentication.password" in e for e in errs)
+    assert any("authentication.username" in e for e in errs)
+
+
+def test_auth_invalid_method_rejected():
+    cfg = _auth_cfg()
+    cfg["authentication"]["method"] = "oauth"
+    assert any("authentication.method" in e for e in _errors(cfg))
+
+
+def test_auth_invalid_max_attempts_rejected():
+    cfg = _auth_cfg()
+    cfg["authentication"]["max_attempts"] = 0
+    assert any("max_attempts" in e for e in _errors(cfg))
+    cfg["authentication"]["max_attempts"] = "three"
+    assert any("max_attempts" in e for e in _errors(cfg))
+
+
+def test_auth_login_url_under_exclude_rejected():
+    cfg = _auth_cfg()
+    cfg["exclude"]["paths"] = ["/login"]
+    assert any("login_url" in e and "exclude.paths" in e for e in _errors(cfg))
+
+
+def test_auth_verification_url_under_exclude_rejected():
+    cfg = _auth_cfg()
+    cfg["exclude"]["paths"] = ["/account"]
+    assert any("verification_url" in e and "exclude.paths" in e for e in _errors(cfg))
+
+
+def test_auth_active_scan_without_global_gate_warns():
+    cfg = _auth_cfg()
+    cfg["authentication"]["active_scan"] = True
+    cfg["scan"]["active_scan"] = False
+    _errs, warns = validate_config.validate(cfg)
+    assert any("authentication.active_scan" in w for w in warns)
+
+
+def test_auth_disabled_ignores_auth_block():
+    # A disabled auth block with junk should not raise errors (backward compat).
+    cfg = _valid_cfg()
+    cfg["authentication"] = {"enabled": False, "method": "nonsense", "password": "x"}
+    assert _errors(cfg) == []
+
+
 def test_invalid_url_fails():
     cfg = _valid_cfg()
     cfg["target"]["base_url"] = "not-a-url"

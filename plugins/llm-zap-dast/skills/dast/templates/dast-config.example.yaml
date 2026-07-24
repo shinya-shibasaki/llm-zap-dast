@@ -31,17 +31,29 @@ zap:
   # 任意: バイナリの代わりに Docker イメージで起動。
   # docker: "ghcr.io/zaproxy/zaproxy:stable"
 
-# 認証は v1 では実行しない（器と方式定義のみ）。
-# 将来（v2）の primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。
-# ZAP が対応できないログインフロー向けに Playwright ログインを fallback とする。
-# （選定理由：ZAP ネイティブ認証は自動再認証を持つ。Playwright による手動認証
-#   パターンは再認証をサポートしないため、長時間スキャンで不利。）
+# 認証付きDAST（best-effort）。enabled: true で工程2.5が認証を設定し、差分で「本当に
+# 認証できたか」を確認してから認証後の探索/スキャン/シナリオ診断へ進む。
+# primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。ZAP が扱えないログイン
+# フロー向けに Playwright ログインを fallback とする（fallback は自動再認証を持たない）。
+# 認証情報の値はここに書かない — 環境変数の「名前」だけを指定する。
 authentication:
   enabled: false
-  method: browser        # browser | playwright（v2で使用。v1では無視）
+  # auto はLLMが対象（ソース/画面/DOM/HTTP履歴）を解析して具体方式へ解決する。
+  # zap_auth.py には解決済みの具体方式のみを渡す（auto は渡さない）。
+  method: auto           # auto | browser | form | json | basic | script
   login_url: /login
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
+  max_attempts: 3        # ログイン試行の上限（ロックアウト回避）
+  verification:          # 工程2.5の差分確認。甘いと「匿名なのに認証成功」と誤合格する
+    method: auto         # auto | url | indicator
+    logged_in_indicator:
+    logged_out_indicator:
+    verification_url:
+  session_management:
+    method: auto         # auto | cookie | header | script
+  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5の明示確認が必要。
+  active_scan: false     # 新規設定では既定OFF
 
 scan:
   spider: true

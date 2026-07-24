@@ -7,6 +7,8 @@
 1. 対象リポジトリの `.gitignore` に `reports/` と `.env` が含まれるか確認する。
 2. 無ければ、追記する前に**利用者に確認する**。**同意なく `.gitignore` を編集しない。**
    判断は `run.log` に記録する。
+3. 認証時：**ZAP セッション/認証用の一時ファイルをリポジトリ配下に置かない**（ZAP User には
+   平文資格情報が残るため）。ZAP の作業ディレクトリはリポジトリ外にし、run 後に teardown で消す。
 
 ## マスク（既定：マスクし、生を残さない）
 
@@ -19,6 +21,22 @@
 - 生データの保持は `--keep-raw` を指定したときのみ。その場合は、成果物と `run.log` に「マスク前
   データを含む」旨の強い警告を残す。
 - **秘匿情報を成果物へ平文で書かない。** 認証情報/トークンをログ・レポートへ出力しない。
+
+## 認証時の追加マスク（`authentication.enabled` 時・`references/authentication.md`）
+
+認証を入れると毎runで資格情報POSTが発生するため、漏れ口が広がる。次を守る：
+
+- **マスク対象を広げる**：ユーザー名・パスワード・Basic認証値・ログインPOST本文。`redact.py` は
+  `username`/`passwd`/`*password*`（`user_password=` 等の非標準名を含む）を既定でマスクし、
+  さらに **`--fields <name1,name2>` で対象アプリの実ログインフィールド名**（ソースから検出したもの）を
+  動的に渡す。
+- **資格情報の値を次へ出さない**：`run.log`・JSON出力・stdout・stderr・`report.md`・
+  `authentication.md`・スクリーンショット・Playwright trace。`zap_auth.py` は資格情報の値を返さない。
+- **ZAP User に保存された資格情報は redaction では消せない**（バイナリセッションに届かない）。
+  対策は**削除**：run 終了時と中断時に必ず `zap_auth.py clear-authentication` を呼び、一時
+  User/Context を削除する。**ZAP セッションをリポジトリ配下に置かない。** 消せなければ強く警告する。
+- 検証：成果物ツリー全体（`reports/dast/<run-id>/`、**`run.log` 含む**）を資格情報の**値**で
+  grep して残っていないこと。
 
 ## redact.py の使い方
 

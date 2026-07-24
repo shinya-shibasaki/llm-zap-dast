@@ -24,11 +24,23 @@ zap:
   # docker: "ghcr.io/zaproxy/zaproxy:stable"
 
 authentication:
-  enabled: false          # v1 は認証を実行しない（器のみ）
-  method: browser         # browser | playwright（v2）
+  enabled: false          # true で認証付きDAST（工程2.5で認証設定＋差分確認）
+  # auto はLLMが対象を解析して具体方式へ解決する（zap_auth.py には auto を渡さない）。
+  method: auto            # auto | browser | form | json | basic | script
   login_url: /login
+  # 認証情報の値は書かない — 環境変数の「名前」だけを指定する。
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
+  max_attempts: 3        # ログイン試行の上限（ロックアウト回避）
+  verification:          # 「本当に認証できたか」を差分で確認する（工程2.5・安全の急所）
+    method: auto         # auto | url | indicator
+    logged_in_indicator:    # 任意。LLMが導出してもよい
+    logged_out_indicator:
+    verification_url:       # 認証後にのみ到達できるURL
+  session_management:
+    method: auto         # auto | cookie | header | script
+  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5の明示確認が必要。
+  active_scan: false     # 新規設定では既定OFF。実験で使うなら明示的に true にする
 
 scan:
   spider: true

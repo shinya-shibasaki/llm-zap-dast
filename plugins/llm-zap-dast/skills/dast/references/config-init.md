@@ -20,8 +20,12 @@
    - `target.allowed_hosts`：`localhost`、`127.0.0.1`（検出ホストがローカルなら追加）。
    - `target.source_roots`：検出したソースディレクトリ（例：`src`、`app`）。
    - `zap.api_url`：既定 `http://localhost:8080`。`api_key_env: ZAP_API_KEY`、`autostart: true`。
-   - `authentication.enabled: false`（ログイン処理を検出しても**v1では無効のまま**。要否はメモ
-     として提示するが、値は false に保つ）。
+   - `authentication`：ログイン処理を検出したら**器を埋める**（`method: auto`・`login_url`・
+     `username_env`/`password_env`・`max_attempts: 3`・`verification`/`session_management` は
+     `auto`・`active_scan: false`）。ただし**生成物の既定は `enabled: false`**（認証付きDASTは
+     best-effort。利用者が明示的に `true` にして使う）。**平文の資格情報は書かず環境変数名のみ**。
+     認証方式候補・ログイン成功/失敗指標の候補はメモとして提示し、`method: auto` のまま残してよい
+     （実行時にLLMが解決する）。
    - `scan`：`spider: true`、`playwright: true`、**`active_scan: true`**（既定ON。検出内容に
      かかわらず true。実行時は工程5のゲート＋明示確認が必須で、無確認では走らない）、`scenario_tests: true`。
      - `ajax_spider`：**SPA / JS描画依存かどうかを判定して提案する**（下記ヒューリスティック）。

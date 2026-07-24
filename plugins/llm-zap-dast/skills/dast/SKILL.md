@@ -35,8 +35,8 @@ disable-model-invocation: true
 - `--from <step>` — その工程**から**工程7まで再開。
 - `--keep-raw` — マスク前の生データを保持する（既定：保持しない）。警告を出すこと。
 
-工程名／番号：`0` 安全確認、`1` source-analysis、`2` target-map、`3` zap-explore、
-`4` playwright、`5` active-scan、`6` scenarios、`7` report。
+工程名／番号：`0` 安全確認、`1` source-analysis、`2` target-map、`2.5` 認証（`authentication.enabled`
+時のみ）、`3` zap-explore、`4` playwright、`5` active-scan、`6` scenarios、`7` report。
 
 `--only` / `--from` は、Skillを分割せずに「一部だけ」「途中から」を実現する手段です。どちらも
 指定がなければ工程0→7を順に実行します。`--only`/`--from` を指定した場合でも、まず工程0の安全
@@ -98,8 +98,12 @@ disable-model-invocation: true
    使い、設定を目視で代替しないこと。
 2. これらの結果と設定から次を確認：
    - 現在のディレクトリがGitリポジトリか／対象URL・対象ホスト／ZAP API接続先＋疎通／対象アプリの
-     疎通／ここでActive Scanを実施してよいか／出力先／認証の要否（v1では認証を実行せず、要否のみ
-     記録）／除外すべきURL・機能。
+     疎通／ここでActive Scanを実施してよいか／出力先／**認証の要否と `authentication.enabled`**／
+     除外すべきURL・機能。
+   - 認証有効時は追加で確認：認証情報用の環境変数が設定されているか／設定に平文の資格情報が
+     書かれていないこと（`validate_config.py` が拒否）／`authentication.active_scan` の値／
+     `login_url`・`verification_url` が `exclude.paths` に飲まれていないこと。**認証情報の値は
+     出力しない。**
 3. 設定が不足・不十分な場合：**推測せず、Active Scanを開始しない。** 不足項目を列挙する。
    ギャップが安全に関わるなら停止する。`dast.yaml` が存在しない場合は、上記「設定生成」に従って
    生成を提案する（断られたら既定値で続行）。
@@ -127,6 +131,28 @@ disable-model-invocation: true
 
 ---
 
+## 工程2.5 — 認証設定と認証確認（`authentication.enabled` 時のみ）（`references/authentication.md`）
+
+**best-effort。** `authentication.enabled: true` のとき、工程2と工程3の間で実行する。目的は
+「LLMが対象を解析してZAPの認証機能を選択・設定し、認証後DASTをどこまで自律実行できるか」の検証。
+失敗しても run は止めず（未認証で継続）、**成功したように扱わず**、未実施の工程と理由を記録する。
+
+- **判断はLLM、反映は `scripts/zap_auth.py`**（判断しない薄いラッパ）。方式は `detect-capabilities`
+  で対応を確認し、`method: auto` は**具体方式へ解決してから**スクリプトへ渡す（`auto` は拒否される）。
+- Context/認証方式/Session Management/Verification/User を設定し、資格情報を env 変数名から読む
+  （`set-credentials`：**値は印字・保存しない**）。
+- **差分確認（安全の急所・必須）**：`test-authentication` は**生の証拠のみ**を返す。判定はLLM＋
+  固定差分ルール——**指標が「認証時に有り・未認証時に無し」**であること（ステータスのみ／存在のみで
+  合格にしない）。身元依存のプローブは**意図したユーザーか**も確認する。
+- **確認できた場合だけ**認証後工程へ進む。**曖昧・失敗なら認証済みとして扱わない。**
+  `max_attempts` 枯渇・認証失効は「認証失敗→認証部分を停止」（静かに匿名継続しない）。
+- 成果物 `reports/dast/<run-id>/authentication.md` に、方式・根拠・認証成否の証拠・未認証/認証後の
+  カバレッジ差・制約を記録（機微はマスク）。チェックポイント。
+
+詳細な手順・差分ルール・Playwright fallback の退化・teardown は `references/authentication.md`。
+
+---
+
 ## 工程3 — ZAPによる初期探索（`references/zap-integration.md`）
 
 **ZAPの起動確認／自動起動**：まず `zap_control.py status` で疎通を見る。
@@ -145,6 +171,11 @@ ZAPが利用可能になったら：
    **Protectedモード**を設定（ATTACKは決して使わない）。
 3. Traditional Spider。4. Passive Scan の完了を待つ。5. `scan.ajax_spider: true` なら
    Ajax Spider。6. 到達URL、HTTP履歴、アラートを取得。
+
+**認証が成功している場合（工程2.5）**：認証済み User として実行する（`zap_auth.py spider-as-user`
+／`ajax-spider-as-user`）。**認証済みで実行した探索と未認証の探索を明示的に区別**して記録する
+（カバレッジ差は `authentication.md` に残す）。Playwright fallback のみで認証した場合は User 指定
+Spider は未実施に落ちる（`references/authentication.md`）。
 
 フロー制御・ポーリング・JSON処理は Python ＋ `requests` で行う（reference参照）。アラートを
 エクスポートしたら、保存前に redaction を通す（`zap-alerts.json` はマスク済みであること）。
@@ -182,6 +213,16 @@ ZAPが利用可能になったら：
 
 曖昧な点があれば → Passive Scanまでで停止（Active Scanしない）。判断を記録する。
 
+**認証付き Active Scan（`authentication.enabled` かつ認証成功時）**：
+- **二重ゲート**。`scan.active_scan` **かつ** `authentication.active_scan` が true、**かつ**工程5の
+  明示確認を通ったときだけ実行（`zap_auth.py active-scan-as-user` は `--gate-passed` を要求する）。
+- **認証済みか＝明示パラメータ**。認証付きは User を明示指定。**未ゲート／未認証のつもりの Active
+  Scan を呼ぶ前に `set-forced-user off`** する（forced-user は Context 単位のため、放置すると
+  未認証スキャンがログイン済みユーザーとして走り結果が濁る）。
+- 確認画面に「**認証済みゆえ未認証スキャンより影響範囲が広い**」旨と、認証後に到達した状態変更URLを
+  明示。認証後に発見した危険URLは `exclude.paths` 追加候補として提示（**`login_url`/`verification_url`
+  は除外候補に入れない**）。Active Scan中に認証失効の可能性があれば成功と断定しない。
+
 ---
 
 ## 工程6 — シナリオベース診断（能動探索）（`references/scenario-testing.md`、テンプレート `templates/scenario-list.example.md`）
@@ -199,6 +240,14 @@ LLMがソース解析とZAP履歴から仮説を立て、対象固有のペイ�
 安全制約（`allowed_hosts` のみ送信・`exclude.paths` 除外・非破壊で検出止まり・DoS相当なし・不可逆な
 状態変更や悪用は自動実行せず要人間）を守る。安全制約は送信してよい範囲と行ってはならない操作を定める
 ものであり、制約の内側であればペイロードを能動的に組み立てて送信する。
+
+**認証が成功している場合（工程2.5）**、認証後のZAP履歴とソースを使って認可・セッション系も診断する。
+- **単一ユーザー設定では、複数アカウントが必要な水平IDOR・水平権限昇格・「別人のトークン」系は
+  構造的に不可能**。無理に確定せず「単一ユーザーのため未実施」と記録する（垂直昇格の拒否確認・
+  認証回避・強制ブラウズ・同一ユーザーのセッション/JWT改ざん・CSRF・自分へのMass Assignment 等は可能）。
+- **ログアウトを誘発するプローブ（セッション無効化・ログアウト後・別トークン）の実行中は
+  自動再認証（forced-user）をOFF**にし、終了後に意図的に張り直す。さもないと再ログイン連打で
+  ロックアウト＋`max_attempts` 枯渇 → 以降が静かに匿名化する。詳細は `references/scenario-testing.md`。
 
 各シナリオに記録：ID、対象機能、想定脆弱性、根拠／前提条件、組み立てたペイロード（機微はマスク）・
 試した反復／期待される安全な挙動と脆弱時の挙動／実行可否、実行結果、証拠、追加確認事項。
@@ -232,7 +281,14 @@ ZAPアラート＋シナリオ結果を分析。次を分ける：
 
 ## 実行後の後始末（クリーンアップ）
 
-工程7の後、または途中で中断する場合も、**スキルがZAPを起動していたとき（工程3のフラグ）だけ**、
-`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_control.py --config <path> shutdown --json` で停止し、
-`run.log` に記録する。**利用者が事前に起動していたZAPは停止しない**（フラグが立っていなければ何もしない）。
+工程7の後、または途中で中断する場合も：
+
+1. **認証を設定していたら（工程2.5）、必ず `zap_auth.py clear-authentication` を呼ぶ** — 一時
+   User/Context を削除する。ZAP User には**平文の資格情報が残る**ため、これは redaction では
+   代替できない（削除が唯一の対策）。ZAP セッションをリポジトリ配下に置かない。消せなければ
+   `run.log` と成果物に警告を残す。中断時も必ず実行する。
+2. **スキルがZAPを起動していたとき（工程3のフラグ）だけ**、
+   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_control.py --config <path> shutdown --json` で停止し、
+   `run.log` に記録する。**利用者が事前に起動していたZAPは停止しない**（フラグが立っていなければ
+   何もしない）。
 
