@@ -8,6 +8,12 @@ reports/
 *.session.*
 zap-*.raw.json
 
+# Planning / spec working docs (kept locally, not part of the plugin deliverable)
+llm-zap-dast-implementation-instructions.md
+llm-zap-dast-v2-auth-plan.md
+認証の実装方法案.md
+認証の実装方法案-改訂版.md
+
 # Python
 __pycache__/
 *.pyc

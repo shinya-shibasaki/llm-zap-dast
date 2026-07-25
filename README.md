@@ -151,7 +151,7 @@ authentication:
   max_attempts: 3
   verification: { method: auto }  # 認証確認（差分でチェック）
   session_management: { method: auto }
-  active_scan: false              # 認証付きActive Scanの追加ゲート（既定OFF）
+  active_scan: true               # 認証付きActive Scanの追加ゲート（既定ON）
 scan:
   spider: true
   ajax_spider: false

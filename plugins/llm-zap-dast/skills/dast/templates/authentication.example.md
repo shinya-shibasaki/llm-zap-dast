@@ -11,7 +11,7 @@
 | 認証確認 | 成功 | 差分確認：`/account` に "Sign out" が認証時のみ出現。ユーザー名 `***REDACTED:field***` をエコー |
 | 認証後 Spider | 成功 | User指定。到達URL 41（未認証 23） |
 | 認証後 Passive Scan | 成功 | 完了 |
-| 認証付き Active Scan | 未実施 | `authentication.active_scan: false`（二重ゲート未充足） |
+| 認証付き Active Scan | 成功 | 二重ゲート充足（`scan.active_scan` かつ `authentication.active_scan`）＋工程5確認済み。User指定で実行 |
 | LLM追加診断 | 一部成功 | 垂直権限昇格の拒否確認・セッション改ざんを実施。水平IDORは単一ユーザーのため未実施 |
 
 ## 採用した認証方式
