@@ -17,6 +17,13 @@ mechanically applies those settings to ZAP's REST API. Design rules enforced her
   * `clear-authentication` removes the temporary User/Context so the credential-bearing ZAP
     session state does not linger.
 
+API names/params below were verified against a live ZAP 2.17.0. Three non-obvious facts:
+  * the "authentication verification strategy" is `context/action/setContextCheckingStrategy`
+    and takes the context NAME (there is no authentication/.../VerificationStrategy action);
+  * `ajaxSpider/action/scanAsUser` takes contextName/userName, unlike spider/ascan (ids);
+  * a newly created ZAP user is NOT enabled — `set-user-enabled` must be called or
+    forced-user mode silently does nothing.
+
 Usage:
     python3 zap_auth.py --config dast.yaml <command> [options] [--json]
 
@@ -28,7 +35,7 @@ import argparse
 import json
 import os
 import sys
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 # LLM-facing method names -> ZAP authentication method API names.
 AUTH_METHOD_MAP = {
@@ -43,6 +50,10 @@ SESSION_METHOD_MAP = {
     "header": "headerBasedSessionManagement",
     "script": "scriptBasedSessionManagement",
 }
+# ZAP's "authentication verification strategy" is the context CHECKING strategy
+# (context/action/setContextCheckingStrategy). Verified against ZAP 2.17.0; there is no
+# authentication/action/setAuthenticationVerificationStrategy endpoint.
+CHECKING_STRATEGIES = {"EACH_REQ", "EACH_RESP", "EACH_REQ_RESP", "AUTO_DETECT", "POLL_URL"}
 
 
 class AuthUsageError(Exception):
@@ -113,14 +124,28 @@ def zap_call(cfg, fmt, component, kind, name, params=None):
     url = f"{_api_base(cfg)}/{fmt}/{component}/{kind}/{name}/"
     if params:
         url += "?" + urlencode(params)
-    ok, status, text = _http_get(url)
+    reached, status, text = _http_get(url)
     data = None
     if text:
         try:
             data = json.loads(text)
         except ValueError:
             data = None
-    return {"ok": ok, "status": status, "data": data}
+    # `ok` must mean "ZAP accepted the call", not merely "we got a response": ZAP answers
+    # errors with HTTP 400 + {"code": ..., "message": ...}, and treating those as success
+    # would let the caller believe auth was configured when it was not.
+    zap_error = isinstance(data, dict) and "code" in data and "message" in data
+    # ZAP also reports some failures as HTTP 200 + {"Result": "FAIL"} (e.g. removeUser with
+    # an id that does not exist), so that must count as a failure too.
+    result_fail = isinstance(data, dict) and str(data.get("Result", "")).upper() == "FAIL"
+    ok = (bool(reached) and not zap_error and not result_fail
+          and (status is None or int(status) < 400))
+    out = {"ok": ok, "status": status, "data": data}
+    if zap_error:
+        out["error"] = {"code": data.get("code"), "message": data.get("message")}
+    elif result_fail:
+        out["error"] = {"code": "result_fail", "message": "ZAP returned Result=FAIL"}
+    return out
 
 
 # --- pure helpers (unit-testable, no network) --------------------------------
@@ -138,6 +163,25 @@ def resolve_auth_method_name(method) -> str:
             f"{sorted(AUTH_METHOD_MAP)}"
         )
     return AUTH_METHOD_MAP[m]
+
+
+def build_config_params(pairs, verbatim=None) -> str:
+    """Build ZAP's *ConfigParams string from key=value pairs.
+
+    ZAP expects a `k=v&k2=v2` string whose VALUES are individually URL-encoded (the whole
+    string is then encoded again as a normal query parameter). Passing raw values is the
+    classic ZAP trap — it fails with a bare "Missing Parameter". `--param k=v` goes through
+    here; `--config-params` is passed verbatim for callers who already encoded it.
+    """
+    if verbatim:
+        return verbatim
+    out = []
+    for pair in pairs or []:
+        if "=" not in str(pair):
+            raise AuthUsageError(f"--param must be key=value, got {pair!r}")
+        key, val = str(pair).split("=", 1)
+        out.append(f"{key}={quote(val, safe='')}")
+    return "&".join(out)
 
 
 def _contains(haystack: str, needle) -> bool:
@@ -198,8 +242,9 @@ def cmd_create_context(cfg, args):
 def cmd_configure_authentication(cfg, args):
     zap_name = resolve_auth_method_name(args.method)  # refuses 'auto'
     params = {"contextId": args.context_id, "authMethodName": zap_name}
-    if args.config_params:
-        params["authMethodConfigParams"] = args.config_params
+    cfg_params = build_config_params(args.param, args.config_params)
+    if cfg_params:
+        params["authMethodConfigParams"] = cfg_params
     return zap_call(cfg, "JSON", "authentication", "action",
                     "setAuthenticationMethod", params)
 
@@ -212,18 +257,49 @@ def cmd_configure_session_management(cfg, args):
     if not zap_name:
         raise AuthUsageError(f"unknown session method {args.method!r}")
     params = {"contextId": args.context_id, "methodName": zap_name}
-    if args.config_params:
-        params["methodConfigParams"] = args.config_params
+    cfg_params = build_config_params(args.param, args.config_params)
+    if cfg_params:
+        params["methodConfigParams"] = cfg_params
     return zap_call(cfg, "JSON", "sessionManagement", "action",
                     "setSessionManagementMethod", params)
 
 
+def resolve_checking_strategy(strategy) -> str:
+    """Validate ZAP's context checking strategy (a.k.a. verification strategy)."""
+    s = str(strategy or "AUTO_DETECT").upper()
+    if s not in CHECKING_STRATEGIES:
+        raise AuthUsageError(
+            f"unknown verification/checking strategy {strategy!r}; expected one of "
+            f"{sorted(CHECKING_STRATEGIES)}"
+        )
+    return s
+
+
 def cmd_configure_verification(cfg, args):
+    """Set the context checking strategy + logged-in/out indicators.
+
+    NOTE: setContextCheckingStrategy takes the context NAME (not the id); the indicator
+    actions take the context id. Both verified against ZAP 2.17.0.
+    """
     out = {}
-    out["verification"] = zap_call(
-        cfg, "JSON", "authentication", "action", "setAuthenticationVerificationStrategy",
-        {"contextId": args.context_id, "verificationStrategy": args.strategy or "response"},
-    )
+    strategy = resolve_checking_strategy(args.strategy)
+    if not args.context:
+        raise AuthUsageError(
+            "configure-verification requires --context (the context NAME; "
+            "setContextCheckingStrategy takes a name, not an id)"
+        )
+    params = {"contextName": args.context, "checkingStrategy": strategy}
+    if strategy == "POLL_URL":
+        if not args.poll_url:
+            raise AuthUsageError("checkingStrategy POLL_URL requires --poll-url")
+        params["pollUrl"] = args.poll_url
+        for key, val in (("pollData", args.poll_data), ("pollHeaders", args.poll_headers),
+                         ("pollFrequency", args.poll_frequency),
+                         ("pollFrequencyUnits", args.poll_frequency_units)):
+            if val:
+                params[key] = val
+    out["verification"] = zap_call(cfg, "JSON", "context", "action",
+                                   "setContextCheckingStrategy", params)
     if args.logged_in_indicator:
         out["logged_in"] = zap_call(
             cfg, "JSON", "authentication", "action", "setLoggedInIndicator",
@@ -242,6 +318,17 @@ def cmd_create_user(cfg, args):
                     {"contextId": args.context_id, "name": args.username or "dast-user"})
 
 
+def cmd_set_user_enabled(cfg, args):
+    """Enable (or disable) a ZAP user. A newly created user is NOT enabled by default, and
+    forced-user mode silently does nothing for a disabled user — so this must be called
+    after set-credentials."""
+    enabled = "true" if str(args.state or "on").lower() in (
+        "on", "true", "1", "enable", "enabled") else "false"
+    return zap_call(cfg, "JSON", "users", "action", "setUserEnabled",
+                    {"contextId": args.context_id, "userId": args.user_id,
+                     "enabled": enabled})
+
+
 def cmd_set_credentials(cfg, args):
     """Read credentials from env by NAME and set them on the ZAP User. Never echo values."""
     if not args.username_env or not args.password_env:
@@ -252,16 +339,23 @@ def cmd_set_credentials(cfg, args):
                if not v]
     if missing:
         return {"ok": False, "reason": f"env var(s) empty/unset: {missing}"}
-    # authCredentialsConfigParams format depends on the auth method; the LLM supplies the
-    # field names, we fill the values from env. Values are never returned or logged.
+    # authCredentialsConfigParams format depends on the auth method (so the auth method must
+    # be configured FIRST — otherwise ZAP still expects the manual-auth credential fields and
+    # rejects these with "Missing Parameter"). The LLM supplies the field names; we fill the
+    # values from env, URL-encoding each one as ZAP requires. Values are never returned/logged.
     cred_params = args.cred_template or "username={u}&password={p}"
-    filled = cred_params.replace("{u}", username).replace("{p}", password)
+    filled = (cred_params
+              .replace("{u}", quote(username, safe=""))
+              .replace("{p}", quote(password, safe="")))
     res = zap_call(cfg, "JSON", "users", "action", "setAuthenticationCredentials",
                    {"contextId": args.context_id, "userId": args.user_id,
                     "authCredentialsConfigParams": filled})
-    # Strip any echo of the filled params defensively; return only ok/status.
-    return {"ok": res.get("ok"), "status": res.get("status"),
-            "note": "credentials set from env; values not returned"}
+    # Strip any echo of the filled params defensively; return only ok/status/error.
+    out = {"ok": res.get("ok"), "status": res.get("status"),
+           "note": "credentials set from env; values not returned"}
+    if res.get("error"):
+        out["error"] = res["error"]
+    return out
 
 
 def status_from_response_header(header: str):
@@ -357,8 +451,16 @@ def cmd_spider_as_user(cfg, args):
 
 
 def cmd_ajax_spider_as_user(cfg, args):
+    # NOTE: unlike spider/ascan, ajaxSpider.scanAsUser takes NAMES (contextName/userName),
+    # not ids. Verified against ZAP 2.17.0.
+    if not args.context or not (args.user_name or args.username):
+        raise AuthUsageError(
+            "ajax-spider-as-user requires --context (name) and --user-name; the ZAP "
+            "ajaxSpider API takes names, not ids"
+        )
     return zap_call(cfg, "JSON", "ajaxSpider", "action", "scanAsUser",
-                    {"contextId": args.context_id, "userId": args.user_id,
+                    {"contextName": args.context,
+                     "userName": args.user_name or args.username,
                      "url": args.url or _get(cfg, "target", "base_url", default="")})
 
 
@@ -376,25 +478,76 @@ def cmd_active_scan_as_user(cfg, args):
                      "scanPolicyName": args.policy or ""})
 
 
+def scrub_users_list(users_data):
+    """Drop the credentials blob from ZAP's usersList.
+
+    VERIFIED ON ZAP 2.17.0: users/view/usersList returns the user's credentials with the
+    PASSWORD IN CLEARTEXT. Returning that would pipe the password straight into run.log /
+    artifacts / stdout, which the plugin forbids. Keep only the non-secret fields.
+    """
+    if not isinstance(users_data, dict):
+        return users_data
+    entries = users_data.get("usersList")
+    if not isinstance(entries, list):
+        return users_data
+    scrubbed = []
+    for u in entries:
+        if not isinstance(u, dict):
+            continue
+        safe = {k: v for k, v in u.items() if k != "credentials"}
+        # Keep the credential TYPE (useful signal) but never the values.
+        raw = str(u.get("credentials", ""))
+        for kind in ("UsernamePasswordAuthenticationCredentials",
+                     "ManualAuthenticationCredentials",
+                     "GenericAuthenticationCredentials"):
+            if kind in raw:
+                safe["credentials_type"] = kind
+                break
+        safe["credentials"] = "***REDACTED:field***"
+        scrubbed.append(safe)
+    return {**users_data, "usersList": scrubbed}
+
+
 def cmd_auth_status(cfg, args):
     method = zap_call(cfg, "JSON", "authentication", "view", "getAuthenticationMethod",
                       {"contextId": args.context_id})
     forced = zap_call(cfg, "JSON", "forcedUser", "view", "isForcedUserModeEnabled")
+    # usersList exposes each user's `enabled` flag — a new ZAP user is disabled by default
+    # and forced-user mode silently does nothing for it, so surface it here. The same
+    # response carries the cleartext password, so it goes through scrub_users_list first.
+    users = zap_call(cfg, "JSON", "users", "view", "usersList",
+                     {"contextId": args.context_id})
     return {"authentication_method": _get(method, "data"),
-            "forced_user_mode": _get(forced, "data")}
+            "forced_user_mode": _get(forced, "data"),
+            "users": scrub_users_list(_get(users, "data"))}
 
 
 def cmd_clear_authentication(cfg, args):
-    """Teardown: remove the temporary User and Context so credentials don't linger."""
+    """Teardown: drop forced-user, then the User, then the Context, so the credential-bearing
+    ZAP state does not linger.
+
+    Order matters: forced-user mode must go OFF first (removing a user still in forced-user
+    mode fails). removeContext takes the context NAME (not the id) and removes the context's
+    users with it, so it is the backstop when the user id is unknown. Verified on ZAP 2.17.0.
+    """
     out = {}
-    if args.user_id:
-        out["remove_user"] = zap_call(cfg, "JSON", "users", "action", "removeUser",
-                                      {"contextId": args.context_id, "userId": args.user_id})
     out["forced_off"] = zap_call(cfg, "JSON", "forcedUser", "action",
                                  "setForcedUserModeEnabled", {"boolean": "false"})
-    if args.context_id:
+    if args.user_id is not None and args.context_id:
+        out["remove_user"] = zap_call(cfg, "JSON", "users", "action", "removeUser",
+                                      {"contextId": args.context_id, "userId": args.user_id})
+    if args.context:
         out["remove_context"] = zap_call(cfg, "JSON", "context", "action", "removeContext",
-                                         {"contextId": args.context_id})
+                                         {"contextName": args.context})
+    else:
+        out["remove_context"] = {
+            "ok": False,
+            "error": {"code": "missing_context_name",
+                      "message": "pass --context <name>: removeContext takes the context "
+                                 "NAME. Without it the credential-bearing context is left "
+                                 "in the ZAP session."},
+        }
+    out["complete"] = all(v.get("ok") for v in out.values() if isinstance(v, dict))
     return out
 
 
@@ -405,6 +558,7 @@ COMMANDS = {
     "configure-session-management": cmd_configure_session_management,
     "configure-verification": cmd_configure_verification,
     "create-user": cmd_create_user,
+    "set-user-enabled": cmd_set_user_enabled,
     "set-credentials": cmd_set_credentials,
     "test-authentication": cmd_test_authentication,
     "set-forced-user": cmd_set_forced_user,
@@ -425,9 +579,22 @@ def build_parser():
     p.add_argument("--context-id", dest="context_id")
     p.add_argument("--user-id", dest="user_id")
     p.add_argument("--username")
+    p.add_argument("--user-name", dest="user_name",
+                   help="ZAP user NAME (ajaxSpider takes names, not ids)")
     p.add_argument("--method")
-    p.add_argument("--config-params", dest="config_params")
-    p.add_argument("--strategy")
+    p.add_argument("--poll-url", dest="poll_url")
+    p.add_argument("--poll-data", dest="poll_data")
+    p.add_argument("--poll-headers", dest="poll_headers")
+    p.add_argument("--poll-frequency", dest="poll_frequency")
+    p.add_argument("--poll-frequency-units", dest="poll_frequency_units")
+    p.add_argument("--config-params", dest="config_params",
+                   help="verbatim ZAP *ConfigParams string (values already URL-encoded)")
+    p.add_argument("--param", action="append", default=[],
+                   help="repeatable key=value; values are URL-encoded for ZAP "
+                        "(e.g. --param loginUrl=http://host/login)")
+    p.add_argument("--strategy",
+                   help="context checking strategy: EACH_REQ|EACH_RESP|EACH_REQ_RESP|"
+                        "AUTO_DETECT|POLL_URL (default AUTO_DETECT)")
     p.add_argument("--logged-in-indicator", dest="logged_in_indicator")
     p.add_argument("--logged-out-indicator", dest="logged_out_indicator")
     p.add_argument("--username-env", dest="username_env")

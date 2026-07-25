@@ -23,7 +23,29 @@
    - primary は **Browser Based Authentication**（SPA/CSRF/JSに対応しつつ ZAP が自動再認証を持つ）。
    - ZAP が扱えないフローは **Playwright ログイン**を fallback とする（下記「退化の帰結」）。
 3. **Context 作成** → **認証方式設定** → **Session Management 設定** → **Verification 設定** →
-   **User 作成** → **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）。
+   **User 作成** → **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
+   → **User を有効化**（`set-user-enabled`）→ 必要なら **forced-user ON**。
+
+### 実機（ZAP 2.17.0）で確認済みの落とし穴
+
+スパイクで実測した、間違えると**静かに失敗する**点：
+
+- **順序**：`set-credentials` は**認証方式を設定した後**に呼ぶ。先に呼ぶと ZAP は manual auth の
+  資格情報を期待して `Missing Parameter` で失敗する。
+- **User は既定で無効**（`enabled: false`）。`set-user-enabled` を呼ばないと **forced-user は
+  何もしない**（エラーも出ない）。
+- **`userId` はグローバル連番**（コンテキストごとに0始まりではない）。`create-user` の戻り値の
+  `userId` を必ず使う。
+- **ConfigParams は値を個別にURLエンコード**する必要がある。`--param k=v` を使えばスクリプトが
+  エンコードする（生の文字列を渡すと `Missing Parameter`）。
+- **検証戦略は `context/action/setContextCheckingStrategy`**（`authentication` 側には無い）で、
+  **コンテキスト名**を取る。値は `EACH_REQ` / `EACH_RESP` / `EACH_REQ_RESP` / `AUTO_DETECT` /
+  `POLL_URL`。
+- **ajaxSpider の User 指定は名前**（`contextName`/`userName`）。spider/ascan は id。
+- **teardown の順序**：forced-user を OFF → User 削除 → **Context 削除（名前指定）**。forced-user が
+  ONのままだと User 削除は `Result: FAIL`（HTTP 200）になる。
+- **`users/view/usersList` はパスワードを平文で返す。** `auth-status` は必ずマスクしてから出力する
+  （`zap_auth.py` の `scrub_users_list`）。生の応答をログ・成果物に流さない。
 4. **差分による認証確認（安全の急所。必須）** — `test-authentication` は**生の証拠のみ**を返す。
    判定は **LLM ＋ 下記の固定差分ルール**が行う：
    - 認証済み User として **認証後にのみ到達できる URL/API** を取得し、**同じ対象への未認証**取得と
@@ -68,6 +90,8 @@ forced-user は **Context 単位**の設定。放置すると「未認証のつ�
 ## 認証情報の衛生（teardown）
 
 - 資格情報は env 変数名からのみ読み、**値を run.log・stdout・stderr・成果物・スクショに出さない**。
+- **ZAPの `usersList` は平文パスワードを返す**（実測）。`auth-status` はマスク済みを返すので、
+  **生の ZAP API 応答を直接ログ・成果物に貼らない**こと。
 - **ZAP User に保存された資格情報は redaction では消せない**（バイナリセッションに届かない）。
   対策は削除：**run 終了時と中断時に必ず `zap_auth.py clear-authentication`** を呼び、一時
   User/Context を消す。**ZAP セッションをリポジトリ配下に置かない。** 消せなければ成果物に警告。

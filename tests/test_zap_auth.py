@@ -44,6 +44,103 @@ def test_evidence_has_no_verdict():
     assert ev["identity_markers_in_authed"]["alice"] is True
 
 
+def test_users_list_password_is_scrubbed():
+    """ZAP 2.17 usersList returns the password IN CLEARTEXT — it must never reach output."""
+    raw = {"usersList": [{
+        "name": "dast-user", "id": "5", "contextId": "9", "enabled": "true",
+        "credentials": '{"password":"probe-pass-123","type":'
+                       '"UsernamePasswordAuthenticationCredentials","username":"a@b.c"}',
+    }]}
+    out = zap_auth.scrub_users_list(raw)
+    blob = str(out)
+    assert "probe-pass-123" not in blob
+    assert "a@b.c" not in blob
+    assert out["usersList"][0]["enabled"] == "true"          # useful signal kept
+    assert out["usersList"][0]["credentials_type"] == "UsernamePasswordAuthenticationCredentials"
+
+
+def test_build_config_params_encodes_values():
+    s = zap_auth.build_config_params(["loginUrl=http://h/login", 'data={"a":"b"}'])
+    assert s == "loginUrl=http%3A%2F%2Fh%2Flogin&data=%7B%22a%22%3A%22b%22%7D"
+    # verbatim passthrough wins when given
+    assert zap_auth.build_config_params(["x=1"], verbatim="already%3Dencoded") == "already%3Dencoded"
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.build_config_params(["novalue"])
+
+
+def test_zap_call_treats_result_fail_and_error_code_as_failure(monkeypatch):
+    monkeypatch.setattr(zap_auth, "_http_get",
+                        lambda url, timeout=30: (True, 200, '{"Result":"FAIL"}'))
+    assert zap_auth.zap_call({}, "JSON", "users", "action", "removeUser")["ok"] is False
+    monkeypatch.setattr(zap_auth, "_http_get",
+                        lambda url, timeout=30: (True, 400,
+                                                 '{"code":"missing_parameter","message":"x"}'))
+    res = zap_auth.zap_call({}, "JSON", "context", "action", "removeContext")
+    assert res["ok"] is False and res["error"]["code"] == "missing_parameter"
+    monkeypatch.setattr(zap_auth, "_http_get",
+                        lambda url, timeout=30: (True, 200, '{"Result":"OK"}'))
+    assert zap_auth.zap_call({}, "JSON", "context", "action", "newContext")["ok"] is True
+
+
+def test_checking_strategy_validation():
+    assert zap_auth.resolve_checking_strategy(None) == "AUTO_DETECT"
+    assert zap_auth.resolve_checking_strategy("each_resp") == "EACH_RESP"
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.resolve_checking_strategy("response")  # the old, non-existent value
+
+
+def test_configure_verification_uses_context_name(monkeypatch):
+    """ZAP 2.17: the strategy lives on context/setContextCheckingStrategy and needs a NAME."""
+    seen = {}
+
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        seen[name] = params
+        return {"ok": True}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+
+    class Args:
+        context = "dast-run"
+        context_id = "1"
+        strategy = "EACH_RESP"
+        poll_url = poll_data = poll_headers = poll_frequency = poll_frequency_units = None
+        logged_in_indicator = "Sign out"
+        logged_out_indicator = None
+
+    zap_auth.cmd_configure_verification({}, Args())
+    assert seen["setContextCheckingStrategy"]["contextName"] == "dast-run"
+    assert seen["setContextCheckingStrategy"]["checkingStrategy"] == "EACH_RESP"
+    assert seen["setLoggedInIndicator"]["contextId"] == "1"
+
+
+def test_ajax_spider_uses_names(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda cfg, f, c, k, n, params=None: seen.update({n: params}) or {"ok": True})
+
+    class Args:
+        context = "dast-run"
+        user_name = "dast-user"
+        username = None
+        url = "http://localhost:3000"
+
+    zap_auth.cmd_ajax_spider_as_user({}, Args())
+    p = seen["scanAsUser"]
+    assert p["contextName"] == "dast-run" and p["userName"] == "dast-user"
+    assert "contextId" not in p and "userId" not in p
+
+
+def test_ajax_spider_requires_names():
+    class Args:
+        context = None
+        user_name = None
+        username = None
+        url = None
+
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.cmd_ajax_spider_as_user({}, Args())
+
+
 def test_status_from_response_header():
     assert zap_auth.status_from_response_header("HTTP/1.1 200 OK\r\nX: y") == 200
     assert zap_auth.status_from_response_header("HTTP/1.1 302 Found") == 302

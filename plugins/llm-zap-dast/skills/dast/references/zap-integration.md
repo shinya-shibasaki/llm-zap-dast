@@ -62,7 +62,10 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
   `/JSON/authentication/view/getSupportedAuthenticationMethods/`、
   `.../action/setAuthenticationMethod/`、`.../setLoggedInIndicator/`、`.../setLoggedOutIndicator/`；
   `/JSON/sessionManagement/action/setSessionManagementMethod/`；
-  `/JSON/users/action/newUser/`、`.../setAuthenticationCredentials/`、`.../removeUser/`；
+  `/JSON/users/action/newUser/`、`.../setAuthenticationCredentials/`、**`.../setUserEnabled/`**
+  （新規Userは既定で無効）、`.../removeUser/`、`/JSON/users/view/usersList/`（**平文パスワードを
+  返すのでマスク必須**）；検証戦略は **`/JSON/context/action/setContextCheckingStrategy/`**
+  （コンテキスト**名**を取る。`authentication` 側には無い）；
   `/JSON/forcedUser/action/setForcedUser/`、`.../setForcedUserModeEnabled/`；
   User指定スキャン：`/JSON/spider/action/scanAsUser/`、`/JSON/ajaxSpider/action/scanAsUser/`、
   `/JSON/ascan/action/scanAsUser/`（**認証付きActive Scanは二重ゲート＋確認が前提**）。
