@@ -44,6 +44,55 @@ def test_evidence_has_no_verdict():
     assert ev["identity_markers_in_authed"]["alice"] is True
 
 
+def test_status_from_response_header():
+    assert zap_auth.status_from_response_header("HTTP/1.1 200 OK\r\nX: y") == 200
+    assert zap_auth.status_from_response_header("HTTP/1.1 302 Found") == 302
+    assert zap_auth.status_from_response_header("") is None
+    assert zap_auth.status_from_response_header("garbage") is None
+
+
+def test_test_authentication_reads_authed_via_zap(monkeypatch):
+    """The authed read must come from ZAP history (forced user applies), NOT a second
+    direct fetch — otherwise both sides are identical and verification can never pass."""
+    calls = []
+
+    def fake_zap_call(cfg, fmt, component, kind, name, params=None):
+        calls.append(name)
+        if name == "numberOfMessages":
+            return {"ok": True, "data": {"numberOfMessages": "5"}}
+        if name == "accessUrl":
+            return {"ok": True, "data": {"accessUrl": "OK"}}
+        if name == "messages":
+            return {"ok": True, "data": {"messages": [{
+                "requestHeader": "GET http://localhost:3000/rest/user/whoami HTTP/1.1",
+                "responseHeader": "HTTP/1.1 200 OK",
+                "responseBody": '{"user":{"email":"alice@juice-sh.op"}}',
+            }]}}
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake_zap_call)
+    # Unauthenticated direct read returns the logged-out shape.
+    monkeypatch.setattr(zap_auth, "_http_get", lambda url, timeout=30: (True, 401, '{"user":{}}'))
+
+    class Args:
+        verification_url = "/rest/user/whoami"
+        logged_in_indicator = "alice@juice-sh.op"
+        identity_markers = "alice@juice-sh.op"
+
+    cfg = {"target": {"base_url": "http://localhost:3000"}}
+    ev = zap_auth.cmd_test_authentication(cfg, Args())
+
+    assert "accessUrl" in calls and "messages" in calls  # went through ZAP
+    assert ev["status_authed"] == 200
+    assert ev["status_unauth"] == 401
+    assert ev["indicator_in_authed"] is True
+    assert ev["indicator_in_unauth"] is False
+    assert ev["indicator_is_differential"] is True
+    assert ev["identity_markers_in_authed"]["alice@juice-sh.op"] is True
+    # Still no verdict — the caller decides.
+    assert "authenticated" not in ev and "verdict" not in ev
+
+
 def test_evidence_non_differential_indicator():
     # An indicator present in BOTH responses is not differential (the classic false pass).
     ev = zap_auth.evidence_from_responses(

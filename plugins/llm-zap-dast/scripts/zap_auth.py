@@ -264,27 +264,74 @@ def cmd_set_credentials(cfg, args):
             "note": "credentials set from env; values not returned"}
 
 
+def status_from_response_header(header: str):
+    """Parse the status code out of a raw HTTP response header block ('HTTP/1.1 200 OK')."""
+    if not header:
+        return None
+    first = str(header).splitlines()[0] if str(header).splitlines() else ""
+    parts = first.split()
+    for token in parts[1:2]:
+        try:
+            return int(token)
+        except ValueError:
+            return None
+    return None
+
+
+def _message_count(cfg):
+    res = zap_call(cfg, "JSON", "core", "view", "numberOfMessages")
+    try:
+        return int(_get(res, "data", "numberOfMessages") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fetch_through_zap(cfg, url):
+    """Access `url` THROUGH ZAP so the forced user (if enabled) applies, then read the
+    response back out of ZAP's history. Returns (status, body, ok)."""
+    before = _message_count(cfg)
+    res = zap_call(cfg, "JSON", "core", "action", "accessUrl",
+                   {"url": url, "followRedirects": "false"})
+    if not res.get("ok"):
+        return None, "", False
+    msgs = zap_call(cfg, "JSON", "core", "view", "messages",
+                    {"start": str(before), "count": "20"})
+    entries = _get(msgs, "data", "messages") or []
+    # The request we just made is the newest entry mentioning this URL.
+    for entry in reversed(entries if isinstance(entries, list) else []):
+        if not isinstance(entry, dict):
+            continue
+        if url.split("://", 1)[-1].split("/", 1)[-1] in str(entry.get("requestHeader", "")) \
+                or url in str(entry.get("requestHeader", "")):
+            return (status_from_response_header(entry.get("responseHeader", "")),
+                    str(entry.get("responseBody", "")), True)
+    return None, "", True
+
+
 def cmd_test_authentication(cfg, args):
-    """Fetch verification_url as the user and unauthenticated; return RAW EVIDENCE only."""
+    """Fetch verification_url as the user and unauthenticated; return RAW EVIDENCE only.
+
+    The authenticated read goes THROUGH ZAP (forced user applies, so the session/credentials
+    ZAP holds are used); the unauthenticated read is a direct request that bypasses ZAP
+    entirely. Comparing the two is what makes the caller's differential rule meaningful —
+    two identical fetches would always look non-differential and fail verification.
+    """
     base = _get(cfg, "target", "base_url", default="").rstrip("/")
     path = args.verification_url or "/"
     target = path if "://" in path else base + ("" if path.startswith("/") else "/") + path
 
-    # Authenticated fetch via forced user (caller sets forced-user on beforehand); unauth
-    # fetch via a plain request. accessUrl routes through ZAP so it lands in history.
-    authed = zap_call(cfg, "JSON", "core", "action", "accessUrl",
-                      {"url": target, "followRedirects": "false"})
-    a_status = _get(authed, "data", "accessUrl") or authed.get("status")
-    ok_a, st_a, body_a = _http_get(target)  # best-effort direct read of the body
-    ok_u, st_u, body_u = _http_get(target)  # unauth read (no ZAP user context)
+    st_a, body_a, access_ok = _fetch_through_zap(cfg, target)   # authenticated (via ZAP)
+    ok_u, st_u, body_u = _http_get(target)                      # unauthenticated (direct)
 
     evidence = evidence_from_responses(
-        (st_a if ok_a else a_status, body_a),
+        (st_a, body_a),
         (st_u if ok_u else None, body_u),
         logged_in_indicator=args.logged_in_indicator,
         identity_markers=(args.identity_markers or "").split(",") if args.identity_markers else [],
     )
-    evidence["access_ok"] = bool(authed.get("ok"))
+    evidence["access_ok"] = bool(access_ok)
+    evidence["authed_read_via"] = "zap-history (forced user applies)"
+    evidence["unauth_read_via"] = "direct request (bypasses ZAP)"
     return evidence
 
 
