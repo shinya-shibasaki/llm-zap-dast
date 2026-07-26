@@ -52,7 +52,8 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
   `protect` を使う。`attack` は決して使わない。
 - Spider：`/JSON/spider/action/scan/`、`/JSON/spider/view/status/`、
   `/JSON/spider/view/results/`
-- Ajax Spider：`/JSON/ajaxSpider/action/scan/`、`/JSON/ajaxSpider/view/status/`
+- Ajax Spider：`/JSON/ajaxSpider/action/scan/`、`/JSON/ajaxSpider/view/status/` —
+  **Firefox が必要**（下記「ブラウザ前提」）
 - Passive：`/JSON/pscan/view/recordsToScan/`（0 ⇒ 完了）
 - Active：`/JSON/ascan/action/scan/`、`/JSON/ascan/view/status/` — **ゲート付き**、工程5のみ
 - データ：`/JSON/core/view/urls/`、`/JSON/core/view/messages/`（HTTP履歴）、
@@ -69,8 +70,33 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
   `/JSON/forcedUser/action/setForcedUser/`、`.../setForcedUserModeEnabled/`；
   User指定スキャン：`/JSON/spider/action/scanAsUser/`、`/JSON/ajaxSpider/action/scanAsUser/`、
   `/JSON/ascan/action/scanAsUser/`（**認証付きActive Scanは二重ゲート＋確認が前提**）。
-  **Browser Based Authentication は ZAP 2.16.1+ が必要。** 利用可否は実行時に
-  `zap_auth.py detect-capabilities` で確認する（バージョン差を吸収）。
+  **Browser Based Authentication は ZAP 2.16.1+ ＋ Firefox が必要**（下記「ブラウザ前提」）。
+  利用可否は実行時に `zap_auth.py detect-capabilities` で確認する（バージョン差を吸収）。
+
+### ブラウザ前提（Firefox・必須）
+
+ZAPは次の機能で、**自分のプロセスから Selenium 経由で Firefox を起動**する。工程4/6で使う
+Playwright の Chromium とは別物で、相互に代替できない（READMEの「ブラウザが2種類必要な理由」）。
+
+| ZAPの機能 | 使う場面 |
+| --- | --- |
+| Ajax Spider | 工程3（`scan.ajax_spider: true` のとき） |
+| DOM XSS Active Scan ルール | 工程5 |
+| Browser Based Authentication | 工程2.5（認証の primary 方式） |
+| client アドオン | ZAP起動時のプロファイル生成 |
+
+前提が満たされない場合の見え方：
+
+- **Ajax Spider** は `SessionNotCreatedException: Expected browser binary location, but unable to
+  find binary in default location` で失敗する（工程3で顕在化）。
+- **DOM XSS ルールは黙ってスキップされる。** `zap.log` に
+  `WARN DomXssScanRule - Skipping scanner, failed to start browser` が出るだけで、Active Scan
+  自体は正常終了する。**レポートには「Active Scan 実行済み」と書けてしまう**ので、Firefox が無い
+  環境ではこの取りこぼしを必ず記録すること。
+
+工程0の `check_environment.py` が `browser_firefox` として検査する。**未充足のまま Active Scan を
+実行した場合は、DOM XSS が未検査であることを `execution-summary.json` とレポートの「スキップした
+工程と理由」に明記する**こと（`report-format.md`）。
 
 ### 認証操作は `zap_auth.py` に寄せる（判断しない薄いラッパ）
 

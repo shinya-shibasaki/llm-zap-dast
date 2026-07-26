@@ -16,7 +16,10 @@
 ## 手順
 
 1. **能力検出**：`zap_auth.py detect-capabilities` で、使用中ZAPが対応する認証／セッション方式を取得。
-   未対応方式は選ばない。**ZAP Browser Based Authentication は 2.16.1+ が必要**。
+   未対応方式は選ばない。**ZAP Browser Based Authentication は 2.16.1+ ＋ Firefox が必要**
+   （BBAはZAPがSelenium経由で実ブラウザを起動するため。`references/zap-integration.md` の
+   「ブラウザ前提」を参照）。`detect-capabilities` は ZAP の対応方式しか見ないので、**Firefox の
+   有無は工程0の `check_environment.py`（`browser_firefox`）の結果で判断する**こと。
 2. **方式の解決（`auto` を解決する）**：`method: auto` の場合、LLMがソース/画面から具体方式
    （browser / form / json / basic / script）へ**解決してから**スクリプトを呼ぶ。
    **`zap_auth.py` に `auto` を渡さない**（`configure-authentication` は `auto` を拒否する）。

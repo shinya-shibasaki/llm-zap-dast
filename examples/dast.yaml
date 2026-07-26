@@ -44,7 +44,7 @@ authentication:
 
 scan:
   spider: true
-  ajax_spider: false
+  ajax_spider: false      # ZAPが Firefox を起動する（必須依存。READMEの前提条件を参照）
   playwright: true
   active_scan: true       # 既定ON。実行時は工程5のゲート＋明示確認が必須
   scenario_tests: true

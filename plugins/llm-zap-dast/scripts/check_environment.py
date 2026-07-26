@@ -24,6 +24,19 @@ from urllib.parse import urlparse
 
 MIN_PY = (3, 8)
 
+# Firefox is a PREREQUISITE, not an option: ZAP launches it through Selenium for the Ajax
+# Spider, the DOM XSS active scan rule, Browser Based Authentication and the client add-on.
+# Playwright's Chromium does NOT substitute — ZAP starts a browser from its own process and
+# never looks at ~/.cache/ms-playwright. Checked unconditionally (not gated on
+# scan.ajax_spider) because the DOM XSS rule and BBA need it regardless of that setting.
+FIREFOX_BINARIES = ("firefox", "firefox-esr")
+FIREFOX_INSTALL_HINT = (
+    "wget -O /tmp/firefox.tar.xz "
+    "'https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US' && "
+    "sudo tar -xJf /tmp/firefox.tar.xz -C /opt && "
+    "sudo ln -sf /opt/firefox/firefox /usr/local/bin/firefox"
+)
+
 
 def _load_cfg(path):
     try:
@@ -110,6 +123,31 @@ def _detect_zap_all_interfaces(port):
     if listens_local:
         return "ok", f"ZAP port {port} bound to loopback only"
     return "unknown", f"no listener found on port {port} (ZAP may be remote or not running)"
+
+
+def detect_firefox():
+    """Return (status, detail) for the Firefox prerequisite. Never raises.
+
+    Status is 'warn' (not 'fail') when missing: a missing browser is a CAPABILITY gap, and
+    safety-policy.md reserves stopping the run for SAFETY failures. Reporting it here turns
+    a step-3 Selenium stack trace — and a silently skipped DOM XSS rule in step 5 — into a
+    known, recordable condition at step 0.
+    """
+    found = next((p for p in (shutil.which(n) for n in FIREFOX_BINARIES) if p), None)
+    if not found:
+        return "warn", (
+            "Firefox not found on PATH. ZAP needs it for the Ajax Spider, the DOM XSS active "
+            "scan rule, Browser Based Authentication and the client add-on; Playwright's "
+            "Chromium does not substitute. The Ajax Spider fails loudly, but the DOM XSS rule "
+            "is skipped SILENTLY while Active Scan still reports success — record that gap in "
+            "the report. Install: " + FIREFOX_INSTALL_HINT
+        )
+    try:
+        r = subprocess.run([found, "--version"], capture_output=True, text=True, timeout=15)
+        version = (r.stdout or r.stderr).strip() or "version unknown"
+    except Exception as exc:  # noqa: BLE001
+        version = f"version unknown ({exc})"
+    return "ok", f"{found} — {version} (geckodriver ships with ZAP's webdriverlinux add-on)"
 
 
 def run_checks(cfg, config_path):
@@ -201,6 +239,10 @@ def run_checks(cfg, config_path):
         ))
     else:
         checks.append(_check("zap_api_key_env", "skip", "zap.api_key_env not configured"))
+
+    # Firefox (prerequisite for every ZAP-driven browser feature)
+    status, detail = detect_firefox()
+    checks.append(_check("browser_firefox", status, detail))
 
     # Output writable
     out_dir = _get(cfg or {}, "output", "directory", default="reports/dast")

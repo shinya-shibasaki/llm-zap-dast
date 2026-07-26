@@ -40,6 +40,21 @@ claude
 - **OWASP ZAP** がインストール済みであること。**手動での事前起動は任意**です — 未起動の場合、
   スキルが `zap.autostart`（既定 true）で `127.0.0.1` にローカルZAPを自動起動します（下記参照）。
   自分で起動しておく場合：`zap.sh -daemon -host 127.0.0.1 -port 8080`。
+- **Firefox**（ZAPが自分で起動するブラウザ。**必須**）。ZAPは Ajax Spider、Active Scan の
+  DOM XSS ルール、Browser Based Authentication、client アドオンで Firefox を Selenium 経由で
+  起動します。後述の Playwright の Chromium では代替できません。
+
+  ```bash
+  wget -O /tmp/firefox.tar.xz "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US"
+  sudo tar -xJf /tmp/firefox.tar.xz -C /opt
+  sudo ln -sf /opt/firefox/firefox /usr/local/bin/firefox
+  ```
+
+  `geckodriver` は ZAP の `webdriverlinux` アドオンが同梱するため、別途インストールは不要です。
+  言語は `lang=en-US` のままで構いません（headlessで動かすためUIは誰も見ません）。
+  **Ubuntu では `apt install firefox` を使わないでください** — 実体が snap への移行パッケージで、
+  snap の confinement 下では geckodriver から起動できないことがあります。`firefox-esr` は Debian
+  のパッケージで Ubuntu のアーカイブには存在しません。
 - **Python 3.8+** とプラグインが使う Python ライブラリ。次でインストールします：
 
   ```bash
@@ -56,6 +71,21 @@ claude
 `urllib` に自動フォールバックするが推奨）、`playwright` は工程4/6 のブラウザ操作に使います
 （Playwright が無ければ工程4は fail-soft でスキップされます）。これ以外のサードパーティ依存は
 ありません。
+
+### ブラウザが2種類必要な理由
+
+紛らわしい点なので明示します。**用途が違うため両方必要**で、片方でもう片方を代替できません。
+
+| ブラウザ | 誰が起動するか | 使われる場面 |
+| --- | --- | --- |
+| **Firefox**（システムにインストール） | **ZAP** が Selenium 経由で起動 | Ajax Spider、Active Scan の DOM XSS ルール、Browser Based Authentication（認証の primary 方式）、client アドオン |
+| **Chromium**（Playwright管理） | **プラグイン**が Playwright 経由で起動 | 工程4（カバレッジ補完）、工程6（シナリオ診断のブラウザ操作） |
+
+ZAPは自前のプロセスからブラウザを起動するため、`~/.cache/ms-playwright` にある Chromium は
+参照しません。Firefox が無い状態でも工程0〜工程3のSpiderまでは進むため、**Ajax Spider に到達して
+初めて Selenium の例外で失敗**します。さらに **Active Scan の DOM XSS ルールは警告ログを残すだけで
+黙ってスキップ**され、レポート上は「Active Scan 実行済み」と見えてしまいます。このため
+`check_environment.py`（工程0）が Firefox の有無を前提条件として検査します。
 
 ## Marketplace の登録（GitHubから）
 
