@@ -125,6 +125,97 @@ def _detect_zap_all_interfaces(port):
     return "unknown", f"no listener found on port {port} (ZAP may be remote or not running)"
 
 
+# Playwright (the PYTHON package — not the Node package, not the Playwright MCP) drives
+# steps 4 and 6. Detection probes SEVERAL interpreters on purpose: the README installs it
+# with `pip install --user`, which lands in ~/.local/lib/pythonX.Y/site-packages, and a
+# target project's .venv created without --system-site-packages deliberately hides that
+# directory. Probing only one "python" therefore yields a FALSE NEGATIVE in most target
+# repos — and because step 4 is fail-soft, the wrong answer is silently dropped instead of
+# challenged. Report WHICH interpreter can import it so step 4 uses that one and stops
+# guessing.
+PLAYWRIGHT_PROBE = (
+    "import playwright, importlib.metadata as m; print(m.version('playwright'))"
+)
+
+
+def _browsers_dir():
+    return os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.expanduser(
+        "~/.cache/ms-playwright")
+
+
+def candidate_interpreters():
+    """Interpreters to probe, in order, de-duplicated by INVOCATION path.
+
+    Deliberately NOT de-duplicated by os.path.realpath: `.venv/bin/python` is a symlink to
+    the very system python it must be distinguished from, and the two have different
+    sys.path. Collapsing them by real path would erase exactly the distinction this check
+    exists to make.
+    """
+    cands = [
+        sys.executable,
+        shutil.which("python3"),
+        shutil.which("python"),
+        os.path.join(".venv", "bin", "python"),
+        os.path.join("venv", "bin", "python"),
+    ]
+    seen, out = set(), []
+    for c in cands:
+        if not c or not os.path.exists(c):
+            continue
+        key = os.path.abspath(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+def _probe_playwright(interpreter):
+    """Return the playwright version importable by `interpreter`, or None."""
+    try:
+        r = subprocess.run([interpreter, "-c", PLAYWRIGHT_PROBE],
+                           capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        return None
+    return r.stdout.strip() or "unknown" if r.returncode == 0 else None
+
+
+def detect_playwright():
+    """Return (status, detail) for Playwright. Never raises.
+
+    Package presence and browser presence are separate facts: `pip install playwright`
+    does not download browsers, so both are reported.
+    """
+    probed = candidate_interpreters()
+    found = next(((i, v) for i, v in ((i, _probe_playwright(i)) for i in probed) if v), None)
+    browsers = _browsers_dir()
+    has_browsers = os.path.isdir(browsers) and any(
+        n.startswith(("chromium", "chrome", "firefox", "webkit"))
+        for n in os.listdir(browsers)
+    ) if os.path.isdir(browsers) else False
+
+    if not found:
+        return "warn", (
+            f"Playwright (Python package) not importable by any of: {probed}. Steps 4 and 6 "
+            f"lose browser-driven exploration and are skipped (fail-soft). NOTE: a `pip "
+            f"install --user` lands in ~/.local and is INVISIBLE to a project .venv, so "
+            f"install it into the interpreter the run will actually use. Install: "
+            f"python3 -m pip install --user --break-system-packages playwright && "
+            f"python3 -m playwright install chromium"
+        )
+    interpreter, version = found
+    if not has_browsers:
+        return "warn", (
+            f"playwright {version} importable via {interpreter}, but no browsers found in "
+            f"{browsers}. The package alone cannot launch a browser. Run: "
+            f"{interpreter} -m playwright install chromium"
+        )
+    return "ok", (
+        f"playwright {version} via {interpreter}; browsers in {browsers}. "
+        f"Use THIS interpreter for steps 4/6 — do not assume a bare 'python3' has it."
+    )
+
+
 def detect_firefox():
     """Return (status, detail) for the Firefox prerequisite. Never raises.
 
@@ -243,6 +334,10 @@ def run_checks(cfg, config_path):
     # Firefox (prerequisite for every ZAP-driven browser feature)
     status, detail = detect_firefox()
     checks.append(_check("browser_firefox", status, detail))
+
+    # Playwright (steps 4/6). Reports which interpreter can import it.
+    status, detail = detect_playwright()
+    checks.append(_check("playwright", status, detail))
 
     # Output writable
     out_dir = _get(cfg or {}, "output", "directory", default="reports/dast")

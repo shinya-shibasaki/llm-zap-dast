@@ -10,6 +10,13 @@
 2. Playwright（または利用可能なブラウザ操作）で、未到達画面へ**ZAP Proxy経由で**遷移し、ZAPに
    記録させる（`zap-integration.md` 参照）。ブラウザ操作が無い → スキップ（fail-soft）、理由を記録。
 
+   **Playwright の有無は工程0の `check_environment.py`（`playwright` チェック）で判定済み**で、
+   結果には**使用すべきインタプリタのパス**が含まれる。それをそのまま使うこと。自前で
+   `import playwright` を試して判断しない — 対象リポジトリに `.venv` があると `pip install --user`
+   で入れた Playwright は venv からは見えず、**実際には入っているのに「無い」と誤判定**する
+   （venv は既定で `~/.local` の site-packages を隠すため）。この工程は fail-soft なので、
+   誤判定はエラーにならず**静かに工程4が飛ぶ**。
+
 許可される操作：ログイン、メニュー操作、フォーム送信、JS生成画面、複数ステップ遷移、権限別画面
 確認。
 

@@ -76,6 +76,75 @@ def test_browser_check_is_not_gated_on_ajax_spider(monkeypatch, tmp_path):
     assert _by_name(checks, "browser_firefox")["status"] == "warn"
 
 
+def test_venv_and_system_python_are_probed_separately(monkeypatch, tmp_path):
+    """The regression this check exists for: a project .venv/bin/python is a SYMLINK to the
+    system python it must be told apart from. De-duplicating candidates by os.path.realpath
+    would collapse the two and re-create the false negative."""
+    venv = tmp_path / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    system = tmp_path / "usr" / "bin"
+    system.mkdir(parents=True)
+    (system / "python3").write_text("#!/bin/sh\n")
+    (venv / "python").symlink_to(system / "python3")  # exactly how `python -m venv` links
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(check_environment.sys, "executable", str(venv / "python"))
+    monkeypatch.setattr(check_environment.shutil, "which",
+                        lambda n: str(system / "python3") if n == "python3" else None)
+
+    probed = [os.path.abspath(p) for p in check_environment.candidate_interpreters()]
+    assert str(venv / "python") in probed
+    assert str(system / "python3") in probed
+
+
+def test_playwright_found_reports_the_working_interpreter(monkeypatch, tmp_path):
+    browsers = tmp_path / "ms-playwright"
+    (browsers / "chromium-1228").mkdir(parents=True)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+    monkeypatch.setattr(check_environment, "candidate_interpreters",
+                        lambda: ["/proj/.venv/bin/python", "/usr/bin/python3"])
+    # Only the system interpreter has it — the venv-shadowing case.
+    monkeypatch.setattr(check_environment, "_probe_playwright",
+                        lambda i: "1.61.0" if i == "/usr/bin/python3" else None)
+    status, detail = check_environment.detect_playwright()
+    assert status == "ok"
+    assert "/usr/bin/python3" in detail
+    assert "1.61.0" in detail
+
+
+def test_playwright_package_without_browsers_warns(monkeypatch, tmp_path):
+    """`pip install playwright` does not download browsers; the two are separate facts."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "absent"))
+    monkeypatch.setattr(check_environment, "candidate_interpreters", lambda: ["/usr/bin/python3"])
+    monkeypatch.setattr(check_environment, "_probe_playwright", lambda i: "1.61.0")
+    status, detail = check_environment.detect_playwright()
+    assert status == "warn"
+    assert "playwright install chromium" in detail
+
+
+def test_playwright_absent_warns_and_names_what_was_probed(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "absent"))
+    monkeypatch.setattr(check_environment, "candidate_interpreters",
+                        lambda: ["/proj/.venv/bin/python"])
+    monkeypatch.setattr(check_environment, "_probe_playwright", lambda i: None)
+    status, detail = check_environment.detect_playwright()
+    assert status == "warn"
+    # The operator must be able to see WHICH interpreters were tried, and why --user installs
+    # go missing, otherwise the false negative is unexplainable.
+    assert "/proj/.venv/bin/python" in detail
+    assert "--user" in detail
+
+
+def test_missing_playwright_does_not_make_the_run_fail(monkeypatch, tmp_path):
+    """Steps 4/6 are fail-soft: a missing Playwright must not block step 0."""
+    monkeypatch.setattr(check_environment, "candidate_interpreters", lambda: [])
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: None)
+    cfg = {"output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "dast.yaml")
+    assert _by_name(checks, "playwright")["status"] == "warn"
+    assert not any(c["status"] == "fail" for c in checks)
+
+
 def test_missing_firefox_does_not_make_the_run_fail(monkeypatch, tmp_path):
     """Exit-code semantics: only hard local failures and the ZAP bind-scope security warning
     are allowed to block step 0. A missing browser must stay non-blocking (fail-soft)."""

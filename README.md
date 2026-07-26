@@ -63,6 +63,12 @@ claude
   ```
 
   （PEP 668 の制約が無い環境では `--break-system-packages` は不要です。）
+
+  ここで入るのは **Python版の Playwright** です（Node版の `npm i playwright` や Playwright MCP
+  とは別物で、それらでは代替されません）。また `--user` でのインストール先は
+  `~/.local/lib/pythonX.Y/site-packages` で、**診断対象リポジトリに `.venv` があると venv からは
+  見えません**（venv は既定でユーザーsite-packagesを隠すため）。工程0の `playwright` チェックが
+  **どのインタプリタで使えるか**まで報告し、工程4/6 はそれを使うので、どちらに入れても動きます。
 - **診断対象のWebアプリケーション**がローカルで稼働していること。
 
 ### 追加依存の理由
