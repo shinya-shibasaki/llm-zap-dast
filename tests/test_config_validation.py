@@ -95,6 +95,95 @@ def test_attack_mode_fails():
     assert any("ATTACK" in e for e in _errors(cfg))
 
 
+# --- destructive / availability gates ----------------------------------------
+def test_destructive_local_default_ok(monkeypatch):
+    # Destructive defaults ON and is fine on a local target (nothing set = default true).
+    monkeypatch.delenv("ZAP_API_KEY", raising=False)
+    cfg = _valid_cfg()
+    assert not any("destructive" in e.lower() for e in _errors(cfg))
+    cfg["scan"]["destructive"] = True
+    assert not any("destructive" in e.lower() for e in _errors(cfg))
+
+
+def test_destructive_nonlocal_without_production_fails(monkeypatch):
+    monkeypatch.setenv("ZAP_API_KEY", "secret-value")  # isolate the destructive rule
+    cfg = _valid_cfg()
+    cfg["target"]["allowed_hosts"] = ["staging.example.com"]
+    cfg["target"]["base_url"] = "http://staging.example.com:3000"
+    cfg["zap"]["api_url"] = "http://staging.example.com:8080"
+    cfg["scan"]["active_scan"] = False  # isolate destructive from the active-scan rule
+    cfg["scan"]["destructive"] = True
+    cfg["safety"]["allow_production"] = False
+    cfg["safety"]["require_local_target"] = False
+    assert any("destructive" in e.lower() for e in _errors(cfg))
+
+
+def test_destructive_nonlocal_with_production_ok(monkeypatch):
+    monkeypatch.setenv("ZAP_API_KEY", "secret-value")
+    cfg = _valid_cfg()
+    cfg["target"]["allowed_hosts"] = ["staging.example.com"]
+    cfg["target"]["base_url"] = "http://staging.example.com:3000"
+    cfg["zap"]["api_url"] = "http://staging.example.com:8080"
+    cfg["scan"]["active_scan"] = False
+    cfg["scan"]["destructive"] = True
+    cfg["safety"]["allow_production"] = True
+    cfg["safety"]["require_local_target"] = False
+    assert not any("destructive" in e.lower() for e in _errors(cfg))
+
+
+def test_availability_impact_default_off_no_error(monkeypatch):
+    # Not set = OFF; even on a local target there is nothing to complain about.
+    monkeypatch.delenv("ZAP_API_KEY", raising=False)
+    cfg = _valid_cfg()
+    assert not any("availability_impact" in e for e in _errors(cfg))
+
+
+def test_availability_impact_nonlocal_without_production_fails(monkeypatch):
+    monkeypatch.setenv("ZAP_API_KEY", "secret-value")
+    cfg = _valid_cfg()
+    cfg["target"]["allowed_hosts"] = ["staging.example.com"]
+    cfg["target"]["base_url"] = "http://staging.example.com:3000"
+    cfg["zap"]["api_url"] = "http://staging.example.com:8080"
+    cfg["scan"]["active_scan"] = False
+    cfg["scan"]["destructive"] = False  # isolate the availability rule
+    cfg["scan"]["availability_impact"] = True
+    cfg["safety"]["allow_production"] = False
+    cfg["safety"]["require_local_target"] = False
+    assert any("availability_impact" in e for e in _errors(cfg))
+
+
+def test_availability_impact_nonlocal_in_allowed_hosts_fails(monkeypatch):
+    # base_url local but a non-local host in allowed_hosts (= ZAP attack scope). DoS traffic
+    # would still reach it; must be refused like destructive is.
+    monkeypatch.setenv("ZAP_API_KEY", "secret-value")
+    cfg = _valid_cfg()
+    cfg["target"]["base_url"] = "http://localhost:3000"
+    cfg["target"]["allowed_hosts"] = ["localhost", "prod.example.com"]
+    cfg["scan"]["active_scan"] = False
+    cfg["scan"]["destructive"] = False
+    cfg["scan"]["availability_impact"] = True
+    cfg["safety"]["allow_production"] = False
+    cfg["safety"]["require_local_target"] = False
+    assert any("availability_impact" in e and "allowed_hosts" in e for e in _errors(cfg))
+
+
+def test_allow_production_quoted_string_rejected(monkeypatch):
+    # bool("false") is True — a quoted allow_production must NOT silently disable the guards.
+    monkeypatch.setenv("ZAP_API_KEY", "secret-value")
+    cfg = _valid_cfg()
+    cfg["target"]["allowed_hosts"] = ["prod.example.com"]
+    cfg["target"]["base_url"] = "http://prod.example.com"
+    cfg["zap"]["api_url"] = "http://localhost:8080"
+    cfg["safety"]["allow_production"] = "false"  # quoted string, the footgun
+    cfg["safety"]["require_local_target"] = True
+    cfg["scan"]["active_scan"] = True
+    cfg["scan"]["destructive"] = True
+    errs = _errors(cfg)
+    # The type error must fire, and the non-local host must NOT slip through as production-ok.
+    assert any("allow_production must be a boolean" in e for e in errs)
+    assert any("non-local hosts are in allowed_hosts" in e for e in errs)
+
+
 def test_auth_enabled_missing_env_fails():
     cfg = _valid_cfg()
     cfg["authentication"] = {"enabled": True, "login_url": "/login"}
@@ -164,6 +253,68 @@ def test_auth_active_scan_without_global_gate_warns():
     cfg["scan"]["active_scan"] = False
     _errs, warns = validate_config.validate(cfg)
     assert any("authentication.active_scan" in w for w in warns)
+
+
+def _multi_user_auth_cfg():
+    cfg = _auth_cfg()
+    del cfg["authentication"]["username_env"]
+    del cfg["authentication"]["password_env"]
+    cfg["authentication"]["users"] = [
+        {"label": "alice", "role": "user",
+         "username_env": "DAST_ALICE_USER", "password_env": "DAST_ALICE_PASS"},
+        {"label": "bob", "role": "user",
+         "username_env": "DAST_BOB_USER", "password_env": "DAST_BOB_PASS"},
+    ]
+    return cfg
+
+
+def test_multi_user_config_passes():
+    assert _errors(_multi_user_auth_cfg()) == []
+
+
+def test_multi_user_missing_env_fails():
+    cfg = _multi_user_auth_cfg()
+    del cfg["authentication"]["users"][1]["password_env"]
+    assert any("users[1].password_env" in e for e in _errors(cfg))
+
+
+def test_multi_user_plaintext_rejected():
+    cfg = _multi_user_auth_cfg()
+    cfg["authentication"]["users"][0]["password"] = "hunter2"
+    assert any("users[0].password" in e for e in _errors(cfg))
+
+
+def test_multi_user_duplicate_label_rejected():
+    cfg = _multi_user_auth_cfg()
+    cfg["authentication"]["users"][1]["label"] = "alice"
+    assert any("label" in e and "duplicated" in e for e in _errors(cfg))
+
+
+def test_multi_user_empty_list_rejected():
+    cfg = _multi_user_auth_cfg()
+    cfg["authentication"]["users"] = []
+    assert any("authentication.users must be a non-empty list" in e for e in _errors(cfg))
+
+
+def test_multi_user_duplicate_credentials_rejected():
+    # Two accounts pointing at the same env vars = same identity = silent IDOR false-negative.
+    cfg = _multi_user_auth_cfg()
+    cfg["authentication"]["users"][1]["username_env"] = "DAST_ALICE_USER"
+    cfg["authentication"]["users"][1]["password_env"] = "DAST_ALICE_PASS"
+    assert any("DISTINCT identities" in e for e in _errors(cfg))
+
+
+def test_multi_user_with_single_form_warns():
+    cfg = _multi_user_auth_cfg()
+    cfg["authentication"]["username_env"] = "DAST_LEFTOVER_USER"
+    cfg["authentication"]["password_env"] = "DAST_LEFTOVER_PASS"
+    _errs, warns = validate_config.validate(cfg)
+    assert any("top-level username_env/password_env are ignored" in w for w in warns)
+
+
+def test_single_account_still_supported():
+    # Legacy single username_env/password_env keeps working with no users list.
+    assert _errors(_auth_cfg()) == []
 
 
 def test_auth_disabled_ignores_auth_block():

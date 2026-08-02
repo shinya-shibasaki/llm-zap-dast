@@ -141,6 +141,67 @@ def test_ajax_spider_requires_names():
         zap_auth.cmd_ajax_spider_as_user({}, Args())
 
 
+def test_user_id_list_collects_and_dedups():
+    class Args:
+        user_id = "3"
+        user_ids = "3, 4 ,5"
+    assert zap_auth._user_id_list(Args()) == ["3", "4", "5"]
+
+    class Args2:
+        user_id = None
+        user_ids = "7,8"
+    assert zap_auth._user_id_list(Args2()) == ["7", "8"]
+
+    class Args3:
+        user_id = "9"
+        user_ids = None
+    assert zap_auth._user_id_list(Args3()) == ["9"]
+
+
+def test_clear_authentication_removes_all_users(monkeypatch):
+    """Multi-account teardown must remove every user, then the context."""
+    calls = []
+
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        calls.append((name, params))
+        return {"ok": True}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+
+    class Args:
+        context = "dast-run"
+        context_id = "1"
+        user_id = "10"
+        user_ids = "11,12"
+
+    out = zap_auth.cmd_clear_authentication({}, Args())
+    removed = [p["userId"] for (n, p) in calls if n == "removeUser"]
+    assert removed == ["10", "11", "12"]
+    # forced-user off happened before any removeUser
+    assert calls[0][0] == "setForcedUserModeEnabled"
+    assert any(n == "removeContext" for (n, _p) in calls)
+    assert out["complete"] is True
+    assert set(out["remove_users"]) == {"10", "11", "12"}
+
+
+def test_clear_authentication_incomplete_when_a_user_removal_fails(monkeypatch):
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        if name == "removeUser" and params.get("userId") == "12":
+            return {"ok": False, "error": {"code": "result_fail", "message": "x"}}
+        return {"ok": True}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+
+    class Args:
+        context = "dast-run"
+        context_id = "1"
+        user_id = None
+        user_ids = "11,12"
+
+    out = zap_auth.cmd_clear_authentication({}, Args())
+    assert out["complete"] is False
+
+
 def test_status_from_response_header():
     assert zap_auth.status_from_response_header("HTTP/1.1 200 OK\r\nX: y") == 200
     assert zap_auth.status_from_response_header("HTTP/1.1 302 Found") == 302

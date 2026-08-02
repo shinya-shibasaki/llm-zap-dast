@@ -25,15 +25,24 @@
      `auto`・`active_scan: true`）。ただし**生成物の既定は `enabled: false`**（認証付きDASTは
      best-effort。利用者が明示的に `true` にして使う）。**平文の資格情報は書かず環境変数名のみ**。
      認証方式候補・ログイン成功/失敗指標の候補はメモとして提示し、`method: auto` のまま残してよい
-     （実行時にLLMが解決する）。
+     （実行時にLLMが解決する）。**ロール/権限の存在を検出したら**（管理者機能・ロール定義など）、
+     認可診断には複数アカウントが要る旨をメモし、`authentication.users`（同一ロール2＝水平／
+     異ロール＝垂直／3＝両方）の**コメント例を添える**（環境変数名のみ。既定は単一のままでよい）。
    - `scan`：`spider: true`、`playwright: true`、**`active_scan: true`**（既定ON。検出内容に
-     かかわらず true。実行時は工程5のゲート＋明示確認が必須で、無確認では走らない）、`scenario_tests: true`。
+     かかわらず true。実行時は工程5のゲート＋明示確認が必須で、無確認では走らない）、`scenario_tests: true`、
+     **`destructive: true`**（既定ON。使い捨てローカル対象前提。非ローカル＋`allow_production:false`
+     では検証で拒否される。外部副作用は常に禁止）、**`availability_impact: false`**（DoS相当は既定OFF）。
      - `ajax_spider`：**SPA / JS描画依存かどうかを判定して提案する**（下記ヒューリスティック）。
        SPAと判断できれば `true`、そうでなければ `false`。攻撃は送らず遅くなるだけなので、検出時の
        自動 true は安全。**推測である旨と根拠を明示**し、利用者が変えられるようにする。
    - `safety`：`require_local_target: true`、**`allow_production: false`**。
-   - `exclude.paths`：検出した破壊的エンドポイントを候補として列挙（例：`/logout`、
-     `/admin/delete-all`、`/api/reset`）。**推測である旨を明示**し、利用者に取捨選択させる。
+   - `exclude.paths`：`login_url`/`verification_url` は入れない。`/logout` は認証維持のため除外候補に
+     挙げる。**データ破壊系（`/admin/delete-all`・`/api/reset` 等）は扱いが分かれる点を明示する**：
+     `exclude.paths` は Spider/Ajax/Passive/Active（工程3〜5）**だけでなく工程6のシナリオ診断にも効く**。
+     一方、生成物の既定は `scan.destructive: true`（工程6で削除/リセット系を**意図的に検証したい**）。
+     したがって「工程4/5 の無秩序なクロール/Active から外すが工程6では個別に検証する」のか「全工程で
+     完全に触れない」のかは**別の選択**であり、除外に入れると destructive の主目的が空振りする。両者を
+     説明し、**推測である旨を明示**して利用者に選ばせる（既定で一律除外にしない）。
    - `output.directory`：`reports/dast`。
 3. 下書きを利用者に提示し、**どの値が検出由来で、どれが既定/推測か**を明確に説明する（**日本語で**）。
 4. **検証**：書き出し予定のパスに一旦保存し、`validate_config.py --config <path>` を実行。
@@ -67,7 +76,9 @@ Ajax Spider は実ブラウザでJS描画をクロールするため、SPA/JS依
 ## 安全の既定（生成物でも維持）
 
 - 秘匿情報（パスワード/トークン/キー）を設定ファイルに書かない。環境変数名のみ。
-- `active_scan: true`（既定ON。実行時ゲートで担保）／`allow_production: false` を生成物の既定として維持する。
+- `active_scan: true`（既定ON。実行時ゲートで担保）／`destructive: true`（既定ON。非ローカルは検証で
+  拒否＝本番を構造的に破壊できない）／`availability_impact: false`／`allow_production: false` を生成物の
+  既定として維持する。
 - `allowed_hosts` はローカルを既定とし、非ローカルを勝手に足さない。
 
 ## 生成後の流れ

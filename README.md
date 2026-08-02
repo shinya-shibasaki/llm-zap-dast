@@ -182,8 +182,13 @@ authentication:
   enabled: false                  # true で認証付きDAST（best-effort）
   method: auto                    # auto | browser | form | json | basic | script
   login_url: /login
-  username_env: DAST_USERNAME
+  username_env: DAST_USERNAME     # 単一アカウント（従来どおり）
   password_env: DAST_PASSWORD
+  # 複数アカウント（認可診断用）。同一ロール2=水平／異ロール=垂直／3=両方。値は環境変数名のみ。
+  # users:
+  #   - { label: alice, role: user,  username_env: DAST_ALICE_USER, password_env: DAST_ALICE_PASS }
+  #   - { label: bob,   role: user,  username_env: DAST_BOB_USER,   password_env: DAST_BOB_PASS }
+  #   - { label: admin, role: admin, username_env: DAST_ADMIN_USER, password_env: DAST_ADMIN_PASS }
   max_attempts: 3
   verification: { method: auto }  # 認証確認（差分でチェック）
   session_management: { method: auto }
@@ -194,6 +199,8 @@ scan:
   playwright: true
   active_scan: true               # 既定ON。実行時は工程5のゲート＋明示確認が必須
   scenario_tests: true
+  destructive: true               # 対象内部の破壊的検証（既定ON・使い捨てローカル前提）
+  availability_impact: false      # DoS相当・可用性を損なう検証（別軸・既定OFF）
 safety:
   require_local_target: true
   allow_production: false
@@ -225,6 +232,17 @@ output:
   残る資格情報は run 後に削除します。**対象は原則、自分が所有する使い捨てのローカル脆弱アプリを想定
   しており、本番・現実の稼働アプリには向けません。** 認証付き Active Scan は `scan.active_scan` と
   `authentication.active_scan` の**両方 true ＋ 工程5の明示確認**で実行します。
+- **複数アカウント（`authentication.users`）。** 認可系の診断範囲はアカウント構成で決まります。
+  **同一ロール2**で水平IDOR・水平権限昇格・別人トークン、**異ロール（低権限＋管理者）**で垂直権限
+  昇格の拒否確認、**3アカウント（同一ロール2＋管理者）**で両方が可能です。単一アカウントでは水平系は
+  構造的に不可能なので「未実施」と記録します。`users` を書くと単一の `username_env`/`password_env` より
+  優先されます（値は書かず環境変数名のみ）。ロール選定は対象に応じて LLM が行います。
+- **破壊的検証（`scan.destructive`、既定ON）。** 対象が使い捨てのローカル脆弱アプリなので、対象アプリ
+  **内部**の不可逆な状態変更（削除・更新・実際の権限昇格など）まで踏み込んで確認します。非ローカル対象＋
+  `allow_production: false` では設定検証が**拒否**します（本番は構造的に破壊できない）。`false` にすると
+  従来どおり検出止まり。**外部への副作用**（外部メール・課金・外部登録・実在内部インフラへの SSRF 等、
+  サンドボックスの外に出る操作）は破壊フラグに関係なく**常に禁止**です。**可用性を損なう検証**（DoS相当）は
+  別軸の `scan.availability_impact`（既定OFF）でのみ有効化します。
 
 ## ローカル開発
 
@@ -274,7 +292,10 @@ python3 plugins/llm-zap-dast/scripts/zap_auth.py --config examples/dast.yaml det
 - **本番は既定で拒否**（`safety.allow_production: false`）。
 - **キーなし＋非ローカルは拒否**。秘匿情報（Cookie/Authorization/トークン/JWT/PII）は既定で
   すべての成果物で**マスク**され、`--keep-raw` を付けない限り生データは残しません。
-- 破壊的操作なし、DoS相当の検証なし。
+- **破壊は3軸で扱います**：対象アプリ内部の破壊（`scan.destructive`、既定ON・使い捨てローカル前提。
+  非ローカルは検証で拒否）／可用性・DoS相当（`scan.availability_impact`、別軸・既定OFF）／
+  サンドボックス外への副作用（外部メール・課金・外部登録・実在インフラへのSSRF等＝**常に禁止**、
+  破壊フラグでも解禁されません）。
 
 **許可されたシステムのみを診断してください。** 自分が所有していない、または明示的な書面の許可が
 ないホストに対して実行しないでください。
@@ -310,8 +331,9 @@ IP（WSLの既定ゲートウェイなど）を使うか、WSL内でZAPを起動
 ## 対象外 / 制約
 
 - **認証は best-effort。** 任意アプリでの認証成功は保証しません。MFA / SSO / OAuth / SAML /
-  CAPTCHA は自動化対象外。単一ユーザー設定のため、複数アカウントが必要な水平IDOR・水平権限昇格は
-  「未実施」として記録します（実装済みのように扱いません）。
+  CAPTCHA は自動化対象外。認可系（水平IDOR・水平/垂直権限昇格）の実施可否は**アカウント構成に依存**
+  します（`authentication.users`）。構成が足りないクラスは「未実施」として記録します（実装済みの
+  ように扱いません）。
 - **対象は使い捨てのローカル脆弱アプリを前提**。本番・現実の稼働アプリには向けません
   （ローカル限定レールで構造的に本番を拒否）。
 - GUI / Web管理画面 / 外部データベース。

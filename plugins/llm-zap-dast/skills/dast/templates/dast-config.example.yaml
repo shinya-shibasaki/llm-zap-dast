@@ -42,8 +42,27 @@ authentication:
   # zap_auth.py には解決済みの具体方式のみを渡す（auto は渡さない）。
   method: auto           # auto | browser | form | json | basic | script
   login_url: /login
+  # --- アカウント（単一 or 複数）---
+  # 単一アカウント：下記 username_env/password_env を使う（従来どおり）。
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
+  # 複数アカウント：認可系の診断範囲はアカウント構成で決まる。
+  #   水平IDOR/水平権限昇格 → 同一ロールを2つ / 垂直権限昇格 → 異なるロール（低権限＋管理者）/
+  #   両方を綺麗にやるなら3つ（同一ロール2＋管理者）。role はLLMが対象ごとに選定する。
+  # users を書くと username_env/password_env より優先。値は書かず環境変数「名」のみ。
+  # users:
+  #   - label: alice
+  #     role: user
+  #     username_env: DAST_ALICE_USER
+  #     password_env: DAST_ALICE_PASS
+  #   - label: bob
+  #     role: user
+  #     username_env: DAST_BOB_USER
+  #     password_env: DAST_BOB_PASS
+  #   - label: admin
+  #     role: admin
+  #     username_env: DAST_ADMIN_USER
+  #     password_env: DAST_ADMIN_PASS
   max_attempts: 3        # ログイン試行の上限（ロックアウト回避）
   verification:          # 工程2.5の差分確認。甘いと「匿名なのに認証成功」と誤合格する
     method: auto         # auto | url | indicator
@@ -61,6 +80,18 @@ scan:
   playwright: true
   active_scan: true
   scenario_tests: true
+  # 破壊的検証（対象アプリ内部の不可逆な状態変更＝削除・更新・実権限昇格など）。
+  # このフラグが制御するのは LLM主導の工程4・6のみ。使い捨てローカル対象を前提に既定ON。
+  # 非ローカル対象＋allow_production:false では拒否される。false にすると工程4・6は従来どおり
+  # 検出止まり（悪用・状態変更は要人間）。
+  # 注意1：Active Scan（工程5）と Spider（工程3）は本質的に破壊的で、このフラグとは独立。
+  #        active_scan を切らない限り destructive:false でも破壊しうる。
+  # 注意2：外部メール/課金/外部登録/実在内部インフラSSRF等（サンドボックス外への副作用）は
+  #        このフラグに関係なく常に禁止。可用性を損なう検証は availability_impact 側で制御する。
+  destructive: true
+  # 可用性・DoS相当（重いtime-based・大量負荷）。別軸で既定OFF（run途中でアプリが落ちると
+  # 以降のカバレッジを失うため）。レート確認の小さなバーストはこれに含まれない。
+  availability_impact: false
 
 safety:
   require_local_target: true

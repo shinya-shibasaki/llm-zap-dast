@@ -522,20 +522,44 @@ def cmd_auth_status(cfg, args):
             "users": scrub_users_list(_get(users, "data"))}
 
 
+def _user_id_list(args):
+    """Collect user ids to remove from --user-id and/or --user-ids (comma-separated).
+
+    Multi-account runs create several ZAP users in one context; teardown must remove them
+    all. removeContext is still the backstop (it drops the context's users with it), but we
+    remove each known user explicitly first so a caller that omits --context still cleans up.
+    """
+    ids = []
+    if args.user_id is not None and str(args.user_id) != "":
+        ids.append(str(args.user_id))
+    for chunk in str(getattr(args, "user_ids", "") or "").split(","):
+        chunk = chunk.strip()
+        if chunk:
+            ids.append(chunk)
+    # de-dup, preserve order
+    seen = set()
+    return [i for i in ids if not (i in seen or seen.add(i))]
+
+
 def cmd_clear_authentication(cfg, args):
-    """Teardown: drop forced-user, then the User, then the Context, so the credential-bearing
-    ZAP state does not linger.
+    """Teardown: drop forced-user, then every User, then the Context, so the credential-
+    bearing ZAP state does not linger.
 
     Order matters: forced-user mode must go OFF first (removing a user still in forced-user
-    mode fails). removeContext takes the context NAME (not the id) and removes the context's
-    users with it, so it is the backstop when the user id is unknown. Verified on ZAP 2.17.0.
+    mode fails). Each account's user is removed explicitly (multi-account runs create
+    several). removeContext takes the context NAME (not the id) and removes the context's
+    users with it, so it is the backstop when a user id is unknown. Verified on ZAP 2.17.0.
     """
     out = {}
     out["forced_off"] = zap_call(cfg, "JSON", "forcedUser", "action",
                                  "setForcedUserModeEnabled", {"boolean": "false"})
-    if args.user_id is not None and args.context_id:
-        out["remove_user"] = zap_call(cfg, "JSON", "users", "action", "removeUser",
-                                      {"contextId": args.context_id, "userId": args.user_id})
+    user_ids = _user_id_list(args)
+    if user_ids and args.context_id:
+        removed = {}
+        for uid in user_ids:
+            removed[uid] = zap_call(cfg, "JSON", "users", "action", "removeUser",
+                                    {"contextId": args.context_id, "userId": uid})
+        out["remove_users"] = removed
     if args.context:
         out["remove_context"] = zap_call(cfg, "JSON", "context", "action", "removeContext",
                                          {"contextName": args.context})
@@ -547,7 +571,14 @@ def cmd_clear_authentication(cfg, args):
                                  "NAME. Without it the credential-bearing context is left "
                                  "in the ZAP session."},
         }
-    out["complete"] = all(v.get("ok") for v in out.values() if isinstance(v, dict))
+    # remove_users is a {uid: result} map; every other entry is a single result dict.
+    def _all_ok(v):
+        if not isinstance(v, dict):
+            return True
+        if "ok" in v:
+            return bool(v.get("ok"))
+        return all(_all_ok(sub) for sub in v.values())
+    out["complete"] = all(_all_ok(v) for v in out.values())
     return out
 
 
@@ -578,6 +609,9 @@ def build_parser():
     p.add_argument("--context")
     p.add_argument("--context-id", dest="context_id")
     p.add_argument("--user-id", dest="user_id")
+    p.add_argument("--user-ids", dest="user_ids",
+                   help="comma-separated ZAP user ids for multi-account teardown "
+                        "(clear-authentication removes them all)")
     p.add_argument("--username")
     p.add_argument("--user-name", dest="user_name",
                    help="ZAP user NAME (ajaxSpider takes names, not ids)")

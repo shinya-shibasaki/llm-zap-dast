@@ -12,14 +12,27 @@
 | 認証後 Spider | 成功 | User指定。到達URL 41（未認証 23） |
 | 認証後 Passive Scan | 成功 | 完了 |
 | 認証付き Active Scan | 成功 | 二重ゲート充足（`scan.active_scan` かつ `authentication.active_scan`）＋工程5確認済み。User指定で実行 |
-| LLM追加診断 | 一部成功 | 垂直権限昇格の拒否確認・セッション改ざんを実施。水平IDORは単一ユーザーのため未実施 |
+| LLM追加診断 | 一部成功 | 水平IDOR（alice→bob）・垂直権限昇格の拒否確認・セッション改ざんを実施。<br>SSO連携部分は未実施 |
+
+## アカウント構成
+
+| label | role | User名 | 認証 | 用途 |
+| --- | --- | --- | --- | --- |
+| alice | user | `dast-user-alice` | 成功 | 水平IDOR/水平権限昇格（bob と対） |
+| bob | user | `dast-user-bob` | 成功 | 水平IDOR/水平権限昇格（alice と対） |
+| admin | admin | `dast-user-admin` | 成功 | 垂直権限昇格の拒否確認のベースライン |
+
+- 構成：**3アカウント（同一ロール2＋管理者）** → 水平・垂直の両方を実施可能。
+- **相互身元差分**：`/rest/user/whoami` を各 User で取得。alice の応答は alice を、bob の応答は bob を
+  反映（別人セッションへの化けなし）。identity markers はマスク。
+- アカウント切替は `--user-id` 明示で実行（forced-user は Context 単位で1人固定のため）。
 
 ## 採用した認証方式
 
 - 方式：Browser Based Authentication（`method: auto` → `browser` に解決）
 - 採用理由：ログインが SPA＋CSRFトークンで、form/json auth では通らない。BBA は実ブラウザで
   ログインし自動再認証を持つため選択。
-- Context名：`dast-run`／User名：`dast-user`
+- Context名：`dast-run`／User：上記アカウント表のとおり（全て同一 Context 内）
 - Session Management：cookie ベース（`auto` で判定）
 
 ## 認証確認の証拠（差分・マスク済み）
@@ -40,6 +53,10 @@
 
 ## 制約・失敗事項
 
-- 水平IDOR・水平権限昇格：**単一ユーザーのため未実施**（要2アカウント）。
+- 認可クラスの実施可否は**アカウント構成依存**。本 run は3アカウント構成のため水平・垂直とも実施。
+  単一アカウントだった場合は「水平系は単一アカウントのため未実施」と記録する。
+- 破壊的検証：`scan.destructive` 有効時は他人リソースへの更新/削除の可否まで確認（何を変更したかは
+  scenarios.md に記録）。`false` なら読み取りでの検出止まり。
 - MFA/SSO/CAPTCHA：なし（該当時は未実施として記録）。
-- teardown：run 終了時に `clear-authentication` で User/Context を削除済み。
+- teardown：run 終了時に `clear-authentication --user-ids <alice,bob,admin>` で全 User/Context を
+  削除済み（removeContext が backstop）。

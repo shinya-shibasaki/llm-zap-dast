@@ -29,8 +29,15 @@ authentication:
   method: auto            # auto | browser | form | json | basic | script
   login_url: /login
   # 認証情報の値は書かない — 環境変数の「名前」だけを指定する。
+  # 単一アカウント：
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
+  # 複数アカウント（認可系の診断に必要）：同一ロール2＝水平／異ロール＝垂直／3＝両方。
+  # users を書くと username_env/password_env より優先される。値は書かず環境変数名のみ。
+  # users:
+  #   - { label: alice, role: user,  username_env: DAST_ALICE_USER, password_env: DAST_ALICE_PASS }
+  #   - { label: bob,   role: user,  username_env: DAST_BOB_USER,   password_env: DAST_BOB_PASS }
+  #   - { label: admin, role: admin, username_env: DAST_ADMIN_USER, password_env: DAST_ADMIN_PASS }
   max_attempts: 3        # ログイン試行の上限（ロックアウト回避）
   verification:          # 「本当に認証できたか」を差分で確認する（工程2.5・安全の急所）
     method: auto         # auto | url | indicator
@@ -48,6 +55,12 @@ scan:
   playwright: true
   active_scan: true       # 既定ON。実行時は工程5のゲート＋明示確認が必須
   scenario_tests: true
+  destructive: true       # 対象アプリ内部の破壊的検証。既定ON（使い捨てローカル対象前提）。
+                          # 制御するのは LLM主導の工程4・6のみ。非ローカル＋allow_production:false は拒否。
+                          # false で工程4・6は検出止まりに戻る。ただし Active Scan(工程5)/Spider(工程3)は
+                          # 本質的に破壊的でこのフラグとは独立（active_scan を切らない限り破壊しうる）。
+                          # 外部副作用（外部メール/課金/外部SSRF等）はこのフラグでも常に禁止。
+  availability_impact: false  # DoS相当・可用性を損なう検証。別軸で既定OFF。
 
 safety:
   require_local_target: true

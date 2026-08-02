@@ -134,7 +134,9 @@ Playwright の Chromium とは別物で、相互に代替できない（README�
 - HTTPS：ブラウザプロファイルに **ZAPのルートCA** を取り込む/信頼させるか、証明書エラーを無視して
   ブラウザを起動する（例：Playwright `ignoreHTTPSErrors: true` /
   `--ignore-certificate-errors`）。この点は診断条件としてレポートに記す。
-- ブラウザ操作中も `exclude.paths` と破壊的操作の禁止を守る。
+- ブラウザ操作中も `exclude.paths` を守る。工程4は到達（カバレッジ）が目的なので、`scan.destructive`
+  が有効でも**破壊的操作を巻き込みで発火させない**（意図的な破壊検証は工程6）。外部への副作用（8C）は
+  常に禁止（`references/safety-policy.md`）。
 
 ## WSL / ネットワークの注意
 

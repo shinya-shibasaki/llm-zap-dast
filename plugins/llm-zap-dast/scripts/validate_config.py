@@ -153,7 +153,18 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                 )
 
     # --- production / external-host guard ------------------------------------
-    allow_production = bool(_get(cfg, "safety", "allow_production", default=False))
+    # allow_production must be a REAL bool. bool("false") is True in Python, so a quoted
+    # `allow_production: "false"` would silently disable EVERY production guard below
+    # (production/keyless/active-scan/destructive/availability) — a fail-open. Reject any
+    # non-bool so the mistake surfaces instead of loosening the safety posture.
+    raw_allow_production = _get(cfg, "safety", "allow_production", default=False)
+    if raw_allow_production is not None and not isinstance(raw_allow_production, bool):
+        errors.append(
+            f"safety.allow_production must be a boolean (true/false), got "
+            f"{raw_allow_production!r}. A quoted string like \"false\" is truthy and would "
+            f"disable the production guards."
+        )
+    allow_production = raw_allow_production is True
     require_local = bool(_get(cfg, "safety", "require_local_target", default=True))
     non_local_allowed = sorted(h for h in allowed_set if not _is_local(h))
     if not allow_production and require_local and non_local_allowed:
@@ -199,10 +210,58 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                 "dangerous URLs need excluding before running Active Scan."
             )
 
+    # --- Destructive testing (target-internal) -------------------------------
+    # scan.destructive lifts the "detection-only / no state change" rule for probes against
+    # the TARGET APP ITSELF (deletes, password changes, real Mass Assignment, DELETE on real
+    # resources). It rides the same local/disposable rail as Active Scan: default ON, but
+    # refused on a non-local target unless allow_production is set. This keeps the structural
+    # refusal of production harm intact. It does NOT lift the sandbox-escape ban (8C: external
+    # mail/billing/registration, SSRF to real infra, open redirect) — and note allowed_hosts
+    # does NOT bound those: SSRF fires from the server side and open-redirect from the victim
+    # browser, so their destinations ride in the payload, not the scanner's own target list.
+    # 8C is a prompt-layer discipline, not something validate_config can enforce. Destructive
+    # also does not lift the availability/DoS rule (see scan.availability_impact).
+    destructive = bool(_get(cfg, "scan", "destructive", default=True))
+    if destructive:
+        if base_host and not _is_local(base_host) and not allow_production:
+            errors.append(
+                "scan.destructive is true against a non-local target while "
+                "safety.allow_production is false. Destructive testing is only for "
+                "disposable/local targets. Refusing."
+            )
+        if non_local_allowed and not allow_production:
+            errors.append(
+                "scan.destructive is true but non-local hosts are in allowed_hosts "
+                f"{non_local_allowed} while safety.allow_production is false. Refusing."
+            )
+
+    # --- Availability-impacting tests (DoS-equivalent) -----------------------
+    # A SEPARATE axis from destructive: heavy time-based probes, rate floods, load. Default
+    # OFF even on disposable targets, because knocking the app over mid-run aborts the scan
+    # and loses coverage. Turning it on against a non-local target without allow_production is
+    # refused for the same reason as the other gates.
+    availability_impact = bool(_get(cfg, "scan", "availability_impact", default=False))
+    if availability_impact:
+        if base_host and not _is_local(base_host) and not allow_production:
+            errors.append(
+                "scan.availability_impact is true against a non-local target while "
+                "safety.allow_production is false. Refusing."
+            )
+        # ZAP's attack scope is allowed_hosts, so a local base_url with a non-local host in
+        # allowed_hosts would still send DoS-equivalent traffic there. Mirror the destructive
+        # gate (safety-policy.md promises both are refused for non-local hosts).
+        if non_local_allowed and not allow_production:
+            errors.append(
+                "scan.availability_impact is true but non-local hosts are in allowed_hosts "
+                f"{non_local_allowed} while safety.allow_production is false. Refusing."
+            )
+
     # --- authentication coherence -------------------------------------------
     auth = _get(cfg, "authentication", default={}) or {}
     if isinstance(auth, dict) and bool(auth.get("enabled", False)):
         # Credentials must be environment-variable NAMES, never literal values in the file.
+        # This applies to the legacy single-account form (top-level username/password) and to
+        # every entry of the multi-account authentication.users list.
         for literal_key in ("username", "password"):
             if literal_key in auth:
                 errors.append(
@@ -210,12 +269,75 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                     f"credentials in the config; use authentication.{literal_key}_env with an "
                     f"environment variable NAME instead."
                 )
-        for field in ("username_env", "password_env"):
-            if not auth.get(field):
-                errors.append(
-                    f"authentication.enabled is true but authentication.{field} "
-                    f"(an environment variable NAME) is not set"
+
+        # Accounts: `authentication.users` is a list (2 same-role for horizontal IDOR/privesc,
+        # 2 different roles for vertical, 3 = both). The legacy single account
+        # (top-level username_env/password_env) is treated as a one-element list.
+        users = auth.get("users")
+        if users is not None:
+            # A single-account block left alongside a users list is silently ignored (users
+            # wins). Warn so a stale/forgotten users list is not mistaken for the single form.
+            if auth.get("username_env") or auth.get("password_env"):
+                warnings.append(
+                    "authentication.users is set, so the top-level username_env/password_env "
+                    "are ignored. Remove them to avoid confusion."
                 )
+            if not isinstance(users, list) or not users:
+                errors.append(
+                    "authentication.users must be a non-empty list of accounts "
+                    "(each with username_env and password_env)"
+                )
+                users = []
+            seen_labels: set[str] = set()
+            seen_cred_pairs: dict[tuple[str, str], int] = {}
+            for i, u in enumerate(users):
+                where = f"authentication.users[{i}]"
+                if not isinstance(u, dict):
+                    errors.append(f"{where} must be a mapping")
+                    continue
+                for literal_key in ("username", "password"):
+                    if literal_key in u:
+                        errors.append(
+                            f"{where}.{literal_key} is a literal value. Use {literal_key}_env "
+                            f"with an environment variable NAME instead."
+                        )
+                for field in ("username_env", "password_env"):
+                    if not u.get(field):
+                        errors.append(
+                            f"{where}.{field} (an environment variable NAME) is required"
+                        )
+                label = u.get("label")
+                if label is not None:
+                    ls = str(label)
+                    if ls in seen_labels:
+                        errors.append(
+                            f"{where}.label {ls!r} is duplicated; account labels must be unique"
+                        )
+                    seen_labels.add(ls)
+                # Two accounts pointing at the same credential env vars resolve to the SAME
+                # identity, which silently neuters horizontal IDOR/privesc (compare alice to
+                # alice = false negative). That defeats the whole point of multiple accounts.
+                ue, pe = u.get("username_env"), u.get("password_env")
+                if ue and pe:
+                    pair = (str(ue), str(pe))
+                    if pair in seen_cred_pairs:
+                        errors.append(
+                            f"{where} uses the same username_env/password_env as "
+                            f"authentication.users[{seen_cred_pairs[pair]}]; accounts must "
+                            f"resolve to DISTINCT identities (or they cannot test IDOR/privesc)"
+                        )
+                    else:
+                        seen_cred_pairs[pair] = i
+        else:
+            # Legacy single-account form.
+            for field in ("username_env", "password_env"):
+                if not auth.get(field):
+                    errors.append(
+                        f"authentication.enabled is true but authentication.{field} "
+                        f"(an environment variable NAME) is not set "
+                        f"(or provide an authentication.users list)"
+                    )
+
         if not auth.get("login_url"):
             warnings.append("authentication.enabled is true but login_url is not set")
 
