@@ -83,22 +83,67 @@ def test_zap_call_treats_result_fail_and_error_code_as_failure(monkeypatch):
 
 
 def test_checking_strategy_validation():
-    assert zap_auth.resolve_checking_strategy(None) == "AUTO_DETECT"
     assert zap_auth.resolve_checking_strategy("each_resp") == "EACH_RESP"
     with pytest.raises(zap_auth.AuthUsageError):
         zap_auth.resolve_checking_strategy("response")  # the old, non-existent value
 
 
-def test_configure_verification_uses_context_name(monkeypatch):
-    """ZAP 2.17: the strategy lives on context/setContextCheckingStrategy and needs a NAME."""
-    seen = {}
+def test_checking_strategy_requires_explicit_choice():
+    """No default: falling back silently is what put a run into AUTO_DETECT."""
+    for empty in (None, "", "   "):
+        with pytest.raises(zap_auth.AuthUsageError):
+            zap_auth.resolve_checking_strategy(empty)
 
-    def fake(cfg, fmt, comp, kind, name, params=None):
-        seen[name] = params
-        return {"ok": True}
 
-    monkeypatch.setattr(zap_auth, "zap_call", fake)
+def test_checking_strategy_refuses_auto_detect():
+    """Measured on ZAP 2.17.0: AUTO_DETECT makes isAuthenticated() always false, so ZAP
+    re-authenticates on every request and scores its own logins as failures."""
+    with pytest.raises(zap_auth.AuthUsageError, match="AUTO_DETECT"):
+        zap_auth.resolve_checking_strategy("AUTO_DETECT")
 
+
+def test_poll_params_always_sends_all_five():
+    """POLL_URL needs all five params; empty pollData/pollHeaders must NOT be dropped."""
+    class Args:
+        poll_url = "http://localhost:3000/rest/user/authentication-details"
+        poll_data = poll_headers = poll_frequency = poll_frequency_units = None
+
+    params = zap_auth.build_poll_params(Args())
+    assert set(params) == {"pollUrl", "pollData", "pollHeaders", "pollFrequency",
+                           "pollFrequencyUnits"}
+    assert params["pollData"] == "" and params["pollHeaders"] == ""
+    assert params["pollFrequency"] == 60 and params["pollFrequencyUnits"] == "REQUESTS"
+
+
+def test_poll_params_rejects_non_positive_frequency():
+    class Args:
+        poll_url = "http://localhost:3000/whoami"
+        poll_data = poll_headers = poll_frequency_units = None
+        poll_frequency = 0
+
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.build_poll_params(Args())
+
+
+def test_poll_params_rejects_unknown_units():
+    class Args:
+        poll_url = "http://localhost:3000/whoami"
+        poll_data = poll_headers = poll_frequency = None
+        poll_frequency_units = "MINUTES"
+
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.build_poll_params(Args())
+
+
+def test_require_indicator_refuses_when_none_set():
+    """With neither indicator ZAP short-circuits to 'authenticated' and never checks."""
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.require_indicator(None, None)
+    zap_auth.require_indicator("lastLoginTime", None)   # one is enough
+    zap_auth.require_indicator(None, "unauthorized")
+
+
+def _verification_args(**over):
     class Args:
         context = "dast-run"
         context_id = "1"
@@ -107,10 +152,80 @@ def test_configure_verification_uses_context_name(monkeypatch):
         logged_in_indicator = "Sign out"
         logged_out_indicator = None
 
-    zap_auth.cmd_configure_verification({}, Args())
+    for k, v in over.items():
+        setattr(Args, k, v)
+    return Args()
+
+
+def _fake_zap(seen, context_view):
+    """zap_call stub: records params and serves a context/view/context readback."""
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        seen[name] = params
+        if name == "context" and kind == "view":
+            return {"ok": True, "status": 200, "data": {"context": context_view}}
+        return {"ok": True, "status": 200, "data": {"Result": "OK"}}
+    return fake
+
+
+def test_configure_verification_uses_context_name(monkeypatch):
+    """ZAP 2.17: the strategy lives on context/setContextCheckingStrategy and needs a NAME."""
+    seen = {}
+    monkeypatch.setattr(zap_auth, "zap_call", _fake_zap(
+        seen, {"checkingStrategy": "EACH_RESP", "loggedInPattern": "Sign out"}))
+
+    out = zap_auth.cmd_configure_verification({}, _verification_args())
     assert seen["setContextCheckingStrategy"]["contextName"] == "dast-run"
     assert seen["setContextCheckingStrategy"]["checkingStrategy"] == "EACH_RESP"
     assert seen["setLoggedInIndicator"]["contextId"] == "1"
+    assert out["applied"] is True
+
+
+def test_configure_verification_sends_all_poll_params(monkeypatch):
+    seen = {}
+    ctx = {"checkingStrategy": "POLL_URL", "loggedInPattern": "lastLoginTime",
+           "pollUrl": "http://t/auth", "pollData": "", "pollHeaders": "",
+           "pollFrequency": "60", "pollFrequencyUnits": "REQUESTS"}
+    monkeypatch.setattr(zap_auth, "zap_call", _fake_zap(seen, ctx))
+
+    out = zap_auth.cmd_configure_verification({}, _verification_args(
+        strategy="POLL_URL", poll_url="http://t/auth", logged_in_indicator="lastLoginTime"))
+    sent = seen["setContextCheckingStrategy"]
+    assert sent["pollData"] == "" and sent["pollHeaders"] == ""
+    assert sent["pollFrequency"] == 60 and sent["pollFrequencyUnits"] == "REQUESTS"
+    assert out["applied"] is True
+
+
+def test_configure_verification_aborts_before_indicators_on_failure(monkeypatch):
+    """If the strategy call fails, the indicators must NOT be applied on top of it."""
+    seen = {}
+
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        seen[name] = params
+        if name == "setContextCheckingStrategy":
+            return {"ok": False, "status": 400,
+                    "error": {"code": "illegal_parameter", "message": "bad"}}
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+    out = zap_auth.cmd_configure_verification({}, _verification_args())
+    assert "setLoggedInIndicator" not in seen
+    assert out["applied"] is False and "aborted" in out
+
+
+def test_configure_verification_reports_settings_that_did_not_land(monkeypatch):
+    """setAuthenticationMethod wipes the indicators; the readback must catch that shape."""
+    seen = {}
+    monkeypatch.setattr(zap_auth, "zap_call", _fake_zap(
+        seen, {"checkingStrategy": "EACH_RESP", "loggedInPattern": ""}))
+
+    out = zap_auth.cmd_configure_verification({}, _verification_args())
+    assert out["applied"] is False
+    assert out["mismatch"]["loggedInPattern"] == {"sent": "Sign out", "in_zap": ""}
+
+
+def test_compare_verification_tolerates_string_typed_numbers():
+    """ZAP echoes pollFrequency back as a string; that is not a mismatch."""
+    assert zap_auth.compare_verification({"pollFrequency": 60}, {"pollFrequency": "60"}) == {}
 
 
 def test_ajax_spider_uses_names(monkeypatch):

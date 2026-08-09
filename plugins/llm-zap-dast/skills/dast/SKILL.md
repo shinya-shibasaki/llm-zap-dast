@@ -140,7 +140,12 @@ disable-model-invocation: true
 - **判断はLLM、反映は `scripts/zap_auth.py`**（判断しない薄いラッパ）。方式は `detect-capabilities`
   で対応を確認し、`method: auto` は**具体方式へ解決してから**スクリプトへ渡す（`auto` は拒否される）。
 - Context/認証方式/Session Management/Verification/User を設定し、資格情報を env 変数名から読む
-  （`set-credentials`：**値は印字・保存しない**）。
+  （`set-credentials`：**値は印字・保存しない**）。**認証方式 → Verification の順を守る**
+  （逆順・やり直しは検証設定を消す）。
+- **検証（Verification）は POLL_URL ＋ 認証専用エンドポイントを第一候補にする。** 指標は
+  そのエンドポイントの「セッション有効時／無効時」の実応答を見て選ぶ（ソースは場所の手がかり）。
+  `configure-verification` が返す **`applied: false` は「検証設定が入っていない」**を意味するので、
+  認証済みとして扱わない。`AUTO_DETECT` と「指標ゼロ」はスクリプトが拒否する。
 - **差分確認（安全の急所・必須）**：`test-authentication` は**生の証拠のみ**を返す。判定はLLM＋
   固定差分ルール——**指標が「認証時に有り・未認証時に無し」**であること（ステータスのみ／存在のみで
   合格にしない）。身元依存のプローブは**意図したユーザーか**も確認する。

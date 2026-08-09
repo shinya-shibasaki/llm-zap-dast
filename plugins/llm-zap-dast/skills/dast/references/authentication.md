@@ -28,6 +28,48 @@
 3. **Context 作成** → **認証方式設定** → **Session Management 設定** → **Verification 設定** →
    **User 作成** → **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
    → **User を有効化**（`set-user-enabled`）→ 必要なら **forced-user ON**。
+   **この順序は必須**：`setAuthenticationMethod` は検証設定を既定へリセットするため
+   （実測：POLL_URL＋指標が EACH_RESP＋指標なしに戻る）、認証方式を後から設定し直すと
+   検証設定が黙って消える。やり直す場合は `configure-verification` も必ず再実行する。
+
+### 検証設定（Verification）の決め方
+
+**方式は POLL_URL を第一候補にする。** 認証専用エンドポイント（未ログインでは返らない
+API）を1つ選び、そこを定期的にポーリングさせる。理由は、POLL_URL では ZAP が
+**ポーリング応答だけ**を見るため、指標の正しさをその1つの応答についてだけ保証すればよいから。
+毎回チェック（`EACH_RESP` 等）は**アプリの全応答に対して**指標が正しいことを要求し、それは
+検証しようがない。認証専用エンドポイントが無い場合のみ `EACH_RESP` を使う。
+
+**`AUTO_DETECT` は使わない**（`configure-verification` が拒否する）。実測では ZAP が
+全応答を未認証と判定し、毎リクエスト再ログイン＋自分の成功ログインを失敗計上して、
+10リクエストで認証失敗率100%に達し insights がデーモンを停止した。ブラウザ系ログインでは
+ZAP が実行時に解決する建前だが、実測では解決せず、再認証ごとにブラウザが起動して更に悪化した。
+
+**指標は「ポーリング先の応答」から選ぶ。** ソースは場所を見つける手がかりであって、
+最終判断は実際の応答で行う。手順:
+
+1. ソースから認証専用エンドポイントを特定する。
+2. **セッションが有効な状態**でそこを取得し、応答を見る。
+3. **トークン/クッキーを外した状態**で同じところを取得し、応答を見る。
+4. 2 にあって 3 に無い文字列を `logged_in` にする。3 にあって 2 に無い文字列があれば
+   `logged_out` にする。
+
+**指標を1つも設定しないことはできない**（`configure-verification` が拒否する）。実測では、
+両方未設定だと ZAP は「指標なし」と判断して**確認自体を省略**し、ポーリング先に一度も
+アクセスしないまま「認証済み」を返し続ける（＝セッション失効を永久に検知しない）。
+
+**最も危険なのは「設定したのに、失効時の応答に一致しない `logged_out`」**。実測では、
+セッションが切れた後も**再認証が一度も起きず、401 を返し続けた**。エラーは出ない。
+逆に「広すぎる `logged_out`」は POLL_URL では無害（ポーリング応答しか見ないため）。
+広さより**失効時に一致するか**を確認すること。
+
+指標の型は概ね3つ。いずれも対象の実応答で確認すること（フレームワーク名から推測しない）:
+応答本文の固定文字列（401/403）／ログイン画面へのリダイレクトの `Location` ヘッダ／
+`WWW-Authenticate` ヘッダ。
+
+`configure-verification` は設定後に ZAP へ問い合わせて**実際に入ったか**を確認し、
+`applied` で返す（`false` なら終了コード1）。**`applied: false` のときは検証設定が
+存在しないので、認証済みとして扱わない。**
 
 ### 複数アカウント（`authentication.users`）
 
@@ -58,7 +100,14 @@ set-credentials → set-user-enabled** を繰り返す。`create-user` の戻り
   エンコードする（生の文字列を渡すと `Missing Parameter`）。
 - **検証戦略は `context/action/setContextCheckingStrategy`**（`authentication` 側には無い）で、
   **コンテキスト名**を取る。値は `EACH_REQ` / `EACH_RESP` / `EACH_REQ_RESP` / `AUTO_DETECT` /
-  `POLL_URL`。
+  `POLL_URL`。**新規コンテキストの既定は `EACH_RESP`＋指標なし**（＝常に認証済み扱い）。
+- **POLL_URL は5パラメータ全て必須**（`pollUrl` / `pollData` / `pollHeaders` /
+  `pollFrequency` / `pollFrequencyUnits`）。`pollUrl` だけだと `illegal_parameter`、
+  5つ中4つだと `internal_error`。`pollData`/`pollHeaders` は**空文字が有効**なので、
+  空だからと省いてはいけない（これを省いていたのが再認証ストームの発端）。
+  `pollFrequency` は正の整数のみ（0・負は `illegal_parameter`）。
+- **`setAuthenticationMethod` は検証設定を既定へリセットする**（実測：POLL_URL＋指標が
+  EACH_RESP＋指標なしに戻る）。認証方式は検証設定より**先**に設定する。
 - **ajaxSpider の User 指定は名前**（`contextName`/`userName`）。spider/ascan は id。
 - **teardown の順序**：forced-user を OFF → User 削除 → **Context 削除（名前指定）**。forced-user が
   ONのままだと User 削除は `Result: FAIL`（HTTP 200）になる。

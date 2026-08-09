@@ -16,13 +16,24 @@ mechanically applies those settings to ZAP's REST API. Design rules enforced her
     or returns their values.
   * `clear-authentication` removes the temporary User/Context so the credential-bearing ZAP
     session state does not linger.
+  * `configure-verification` REFUSES `AUTO_DETECT` and refuses a config with no indicator at
+    all, requires an explicit `--strategy`, and reads the context back to confirm the
+    settings actually landed (`applied`). Both refusals guard measured, silent failures —
+    see resolve_checking_strategy() and require_indicator().
 
-API names/params below were verified against a live ZAP 2.17.0. Three non-obvious facts:
+API names/params below were verified against a live ZAP 2.17.0. Non-obvious facts:
   * the "authentication verification strategy" is `context/action/setContextCheckingStrategy`
     and takes the context NAME (there is no authentication/.../VerificationStrategy action);
+  * POLL_URL needs ALL FIVE poll parameters — pollUrl alone gives `illegal_parameter`, four
+    of five gives `internal_error`; pollData/pollHeaders accept empty strings, so they must
+    be sent even when empty;
   * `ajaxSpider/action/scanAsUser` takes contextName/userName, unlike spider/ascan (ids);
   * a newly created ZAP user is NOT enabled — `set-user-enabled` must be called or
-    forced-user mode silently does nothing.
+    forced-user mode silently does nothing;
+  * `setAuthenticationMethod` RESETS the whole verification config — measured: POLL_URL +
+    indicators came back as EACH_RESP with both patterns empty — so verification must be
+    configured AFTER the authentication method, and re-running the method setting silently
+    discards it.
 
 Usage:
     python3 zap_auth.py --config dast.yaml <command> [options] [--json]
@@ -54,6 +65,11 @@ SESSION_METHOD_MAP = {
 # (context/action/setContextCheckingStrategy). Verified against ZAP 2.17.0; there is no
 # authentication/action/setAuthenticationVerificationStrategy endpoint.
 CHECKING_STRATEGIES = {"EACH_REQ", "EACH_RESP", "EACH_REQ_RESP", "AUTO_DETECT", "POLL_URL"}
+POLL_FREQUENCY_UNITS = {"REQUESTS", "SECONDS"}
+# What context/view/context calls the fields we set through three different actions.
+VERIFICATION_READBACK_KEYS = ("checkingStrategy", "loggedInPattern", "loggedOutPattern",
+                              "pollUrl", "pollData", "pollHeaders", "pollFrequency",
+                              "pollFrequencyUnits")
 
 
 class AuthUsageError(Exception):
@@ -265,14 +281,102 @@ def cmd_configure_session_management(cfg, args):
 
 
 def resolve_checking_strategy(strategy) -> str:
-    """Validate ZAP's context checking strategy (a.k.a. verification strategy)."""
-    s = str(strategy or "AUTO_DETECT").upper()
+    """Validate ZAP's context checking strategy (a.k.a. verification strategy).
+
+    There is deliberately NO default. AUTO_DETECT is refused outright — measured on ZAP
+    2.17.0, `AuthenticationMethod.isAuthenticated()` returns false unconditionally while the
+    strategy is AUTO_DETECT, so ZAP re-authenticates on every request AND scores each of its
+    own successful logins as a failure. In one measurement that drove the auth failure rate
+    to 100% within 10 requests and the insights add-on shut the daemon down. ZAP is only
+    meant to resolve AUTO_DETECT into a real strategy for the browser-driven login methods,
+    and even there the resolution is best-effort (measured: browser-based auth kept
+    AUTO_DETECT after login attempts, and re-authenticating launched a browser per request).
+    """
+    s = str(strategy or "").upper().strip()
+    if not s:
+        raise AuthUsageError(
+            "configure-verification requires --strategy. Prefer POLL_URL against an "
+            "authentication-only endpoint; there is no safe default to fall back to."
+        )
     if s not in CHECKING_STRATEGIES:
         raise AuthUsageError(
             f"unknown verification/checking strategy {strategy!r}; expected one of "
             f"{sorted(CHECKING_STRATEGIES)}"
         )
+    if s == "AUTO_DETECT":
+        raise AuthUsageError(
+            "checkingStrategy AUTO_DETECT is refused: ZAP then treats every response as "
+            "unauthenticated, re-authenticates on every request and counts each successful "
+            "login as a failure (measured on 2.17.0: 100% auth failure rate in 10 requests, "
+            "daemon shut down by the insights add-on). Use POLL_URL with an "
+            "authentication-only endpoint, or EACH_RESP with indicators derived from the "
+            "target's own responses."
+        )
     return s
+
+
+def build_poll_params(args) -> dict:
+    """Build the POLL_URL parameters.
+
+    VERIFIED ON ZAP 2.17.0: setContextCheckingStrategy requires ALL FIVE poll parameters
+    when the strategy is POLL_URL. Sending pollUrl alone fails with `illegal_parameter`;
+    sending four of the five fails with `internal_error`; all five succeed. Empty strings
+    are accepted for pollData/pollHeaders, so they must NOT be dropped for being falsy —
+    doing so is what silently defeated POLL_URL and forced the fallback this guard exists
+    to prevent. 60/REQUESTS are ZAP's own defaults, not a choice made here.
+    """
+    if not args.poll_url:
+        raise AuthUsageError("checkingStrategy POLL_URL requires --poll-url")
+    raw_freq = getattr(args, "poll_frequency", None)
+    try:
+        freq = 60 if raw_freq in (None, "") else int(raw_freq)
+    except (TypeError, ValueError):
+        raise AuthUsageError(f"--poll-frequency must be an integer, got {raw_freq!r}") from None
+    if freq <= 0:
+        raise AuthUsageError(
+            f"--poll-frequency must be a positive integer (ZAP rejects {freq} with "
+            "illegal_parameter)"
+        )
+    units = str(getattr(args, "poll_frequency_units", None) or "REQUESTS").upper()
+    if units not in POLL_FREQUENCY_UNITS:
+        raise AuthUsageError(
+            f"--poll-frequency-units must be one of {sorted(POLL_FREQUENCY_UNITS)}, "
+            f"got {units!r}"
+        )
+    return {
+        "pollUrl": args.poll_url,
+        "pollData": args.poll_data or "",
+        "pollHeaders": args.poll_headers or "",
+        "pollFrequency": freq,
+        "pollFrequencyUnits": units,
+    }
+
+
+def require_indicator(logged_in, logged_out) -> None:
+    """At least one indicator must be set, whatever the strategy.
+
+    VERIFIED ON ZAP 2.17.0: with neither indicator configured, ZAP short-circuits to
+    "authenticated" on its no-indicator branch before it reaches the check. Under POLL_URL
+    that means the poll URL is never requested at all (measured: 0 poll hits), so an expired
+    session is never noticed and the scan continues silently unauthenticated. This is the
+    failure the whole verification step exists to prevent, and it produces no error.
+    """
+    if not (logged_in or logged_out):
+        raise AuthUsageError(
+            "configure-verification requires at least one of --logged-in-indicator / "
+            "--logged-out-indicator. With neither set ZAP skips the check entirely and "
+            "reports 'authenticated' forever, so session expiry is never detected."
+        )
+
+
+def compare_verification(expected: dict, in_zap: dict) -> dict:
+    """Return {field: {sent, in_zap}} for every setting that did not actually take."""
+    mismatch = {}
+    for key, want in expected.items():
+        have = in_zap.get(key)
+        if str("" if have is None else have) != str(want):
+            mismatch[key] = {"sent": want, "in_zap": have}
+    return mismatch
 
 
 def cmd_configure_verification(cfg, args):
@@ -288,28 +392,55 @@ def cmd_configure_verification(cfg, args):
             "configure-verification requires --context (the context NAME; "
             "setContextCheckingStrategy takes a name, not an id)"
         )
+    require_indicator(args.logged_in_indicator, args.logged_out_indicator)
+
     params = {"contextName": args.context, "checkingStrategy": strategy}
+    expected = {"checkingStrategy": strategy}
     if strategy == "POLL_URL":
-        if not args.poll_url:
-            raise AuthUsageError("checkingStrategy POLL_URL requires --poll-url")
-        params["pollUrl"] = args.poll_url
-        for key, val in (("pollData", args.poll_data), ("pollHeaders", args.poll_headers),
-                         ("pollFrequency", args.poll_frequency),
-                         ("pollFrequencyUnits", args.poll_frequency_units)):
-            if val:
-                params[key] = val
+        poll = build_poll_params(args)
+        params.update(poll)
+        expected.update(poll)
+
     out["verification"] = zap_call(cfg, "JSON", "context", "action",
                                    "setContextCheckingStrategy", params)
+    if not out["verification"].get("ok"):
+        # Stop here. The context still carries whatever strategy it had before, and applying
+        # indicators on top of a strategy ZAP never accepted is exactly how a run ends up
+        # believing a verification config that does not exist.
+        out["applied"] = False
+        out["aborted"] = ("setContextCheckingStrategy failed; indicators were NOT set. "
+                          "Do not treat verification as configured.")
+        return out
+
     if args.logged_in_indicator:
         out["logged_in"] = zap_call(
             cfg, "JSON", "authentication", "action", "setLoggedInIndicator",
             {"contextId": args.context_id, "loggedInIndicatorRegex": args.logged_in_indicator},
         )
+        expected["loggedInPattern"] = args.logged_in_indicator
     if args.logged_out_indicator:
         out["logged_out"] = zap_call(
             cfg, "JSON", "authentication", "action", "setLoggedOutIndicator",
             {"contextId": args.context_id, "loggedOutIndicatorRegex": args.logged_out_indicator},
         )
+        expected["loggedOutPattern"] = args.logged_out_indicator
+
+    # Read the context back and confirm the settings actually landed. "ZAP accepted the call"
+    # is not the same as "ZAP holds this configuration": setAuthenticationMethod resets the
+    # whole verification config (verified on 2.17.0 — POLL_URL + indicators came back as
+    # EACH_RESP with empty patterns), so a caller that reconfigures the auth method after
+    # this point silently loses it. Comparing against what we sent is the only way to say
+    # the verification config is real.
+    read = zap_call(cfg, "JSON", "context", "view", "context", {"contextName": args.context})
+    ctx = _get(read, "data", "context") or {}
+    in_zap = {k: ctx.get(k) for k in VERIFICATION_READBACK_KEYS if k in ctx}
+    out["readback"] = in_zap
+    mismatch = compare_verification(expected, in_zap)
+    out["applied"] = bool(read.get("ok")) and not mismatch
+    if mismatch:
+        out["mismatch"] = mismatch
+    if not read.get("ok"):
+        out["readback_error"] = read.get("error")
     return out
 
 
@@ -628,7 +759,8 @@ def build_parser():
                         "(e.g. --param loginUrl=http://host/login)")
     p.add_argument("--strategy",
                    help="context checking strategy: EACH_REQ|EACH_RESP|EACH_REQ_RESP|"
-                        "AUTO_DETECT|POLL_URL (default AUTO_DETECT)")
+                        "POLL_URL. REQUIRED — there is no default, and AUTO_DETECT is "
+                        "refused (it makes ZAP re-authenticate on every request)")
     p.add_argument("--logged-in-indicator", dest="logged_in_indicator")
     p.add_argument("--logged-out-indicator", dest="logged_out_indicator")
     p.add_argument("--username-env", dest="username_env")
@@ -663,6 +795,10 @@ def main(argv=None) -> int:
     else:
         for k, v in result.items():
             print(f"{k}: {v}")
+    # `applied: False` means ZAP does not hold the configuration we asked for. Exit non-zero
+    # so a caller that only checks the exit status cannot mistake it for a configured run.
+    if isinstance(result, dict) and result.get("applied") is False:
+        return 1
     return 0
 
 
