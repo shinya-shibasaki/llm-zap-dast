@@ -255,6 +255,51 @@ def cmd_create_context(cfg, args):
                     {"contextName": args.context})
 
 
+def cmd_include_in_context(cfg, args):
+    """Register which URLs the context covers. Without this, authentication does NOTHING.
+
+    VERIFIED ON ZAP 2.17.0, same setup with only this call added or removed:
+
+        includeRegexs []           -> 0 login attempts, the request goes out ANONYMOUS
+                                      (HTTP 401) with no error of any kind
+        includeRegexs [<regex>]    -> 1 login attempt, credentials applied, HTTP 200
+
+    ZAP applies the forced user only to URLs inside the context, so an empty include list
+    means every setting made by configure-authentication / set-credentials / set-forced-user
+    is silently inert. `spider-as-user` fails loudly (`url_not_in_context`), but a plain
+    request through ZAP does not — it just scans unauthenticated.
+
+    The regex is supplied by the caller verbatim (it is the run's scope boundary and belongs
+    to the LLM's judgement, see references/zap-integration.md). This returns the resulting
+    include list so the caller can confirm the scope ZAP actually holds.
+    """
+    if not args.context:
+        raise AuthUsageError("include-in-context requires --context (the context NAME)")
+    regexes = list(args.regex or [])
+    if not regexes:
+        raise AuthUsageError(
+            "include-in-context requires at least one --regex (repeatable). Without an "
+            "include regex ZAP treats every URL as out of context and applies no "
+            "authentication at all — silently."
+        )
+    out = {"applied_regexes": {}}
+    for rgx in regexes:
+        out["applied_regexes"][rgx] = zap_call(
+            cfg, "JSON", "context", "action", "includeInContext",
+            {"contextName": args.context, "regex": rgx})
+    read = zap_call(cfg, "JSON", "context", "view", "context",
+                    {"contextName": args.context})
+    in_zap = parse_include_regexs(_get(read, "data", "context", "includeRegexs"))
+    out["include_regexs"] = in_zap
+    missing = [rgx for rgx in regexes if rgx not in in_zap]
+    out["applied"] = (bool(read.get("ok"))
+                      and all(r.get("ok") for r in out["applied_regexes"].values())
+                      and not missing)
+    if missing:
+        out["not_applied"] = missing
+    return out
+
+
 def cmd_configure_authentication(cfg, args):
     zap_name = resolve_auth_method_name(args.method)  # refuses 'auto'
     params = {"contextId": args.context_id, "authMethodName": zap_name}
@@ -367,6 +412,46 @@ def require_indicator(logged_in, logged_out) -> None:
             "--logged-out-indicator. With neither set ZAP skips the check entirely and "
             "reports 'authenticated' forever, so session expiry is never detected."
         )
+
+
+def parse_include_regexs(value):
+    """Normalise ZAP's includeRegexs into a list of strings.
+
+    ZAP 2.17.0 returns it as a JSON array, but some views hand it back as a STRING holding
+    that array ("[]"). Comparing with `x in str(value)` looks fine and is wrong: repr() of a
+    list doubles the backslashes, so a perfectly applied `\\d` regex reads as missing.
+    """
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return [value] if value else []
+        if isinstance(parsed, list):
+            return [str(v) for v in parsed]
+        return [value]
+    return []
+
+
+def seed_url(url) -> str:
+    """Give a bare origin an explicit '/' path before handing it to a ZAP scanner.
+
+    VERIFIED ON ZAP 2.17.0: the include regexes this skill recommends require a '/' right
+    after the host (`^https?://localhost(:\\d+)?/.*$` — that mandatory slash is what pins the
+    host boundary), so `http://host:3000` is judged OUT of context and scanAsUser fails with
+    `url_not_in_context`, while `http://host:3000/` is accepted. `target.base_url` is written
+    without a trailing slash, so the seed URL needs the canonical form. In HTTP a missing
+    path already MEANS '/', so this changes notation only — never the scope.
+    """
+    text = str(url or "")
+    try:
+        parts = urlparse(text)
+    except ValueError:
+        return text
+    if parts.scheme and parts.netloc and not parts.path:
+        return text + "/"
+    return text
 
 
 def compare_verification(expected: dict, in_zap: dict) -> dict:
@@ -578,7 +663,7 @@ def cmd_set_forced_user(cfg, args):
 def cmd_spider_as_user(cfg, args):
     return zap_call(cfg, "JSON", "spider", "action", "scanAsUser",
                     {"contextId": args.context_id, "userId": args.user_id,
-                     "url": args.url or _get(cfg, "target", "base_url", default="")})
+                     "url": seed_url(args.url or _get(cfg, "target", "base_url", default=""))})
 
 
 def cmd_ajax_spider_as_user(cfg, args):
@@ -592,7 +677,7 @@ def cmd_ajax_spider_as_user(cfg, args):
     return zap_call(cfg, "JSON", "ajaxSpider", "action", "scanAsUser",
                     {"contextName": args.context,
                      "userName": args.user_name or args.username,
-                     "url": args.url or _get(cfg, "target", "base_url", default="")})
+                     "url": seed_url(args.url or _get(cfg, "target", "base_url", default=""))})
 
 
 def cmd_active_scan_as_user(cfg, args):
@@ -605,7 +690,7 @@ def cmd_active_scan_as_user(cfg, args):
         )
     return zap_call(cfg, "JSON", "ascan", "action", "scanAsUser",
                     {"contextId": args.context_id, "userId": args.user_id,
-                     "url": args.url or _get(cfg, "target", "base_url", default=""),
+                     "url": seed_url(args.url or _get(cfg, "target", "base_url", default="")),
                      "scanPolicyName": args.policy or ""})
 
 
@@ -716,6 +801,7 @@ def cmd_clear_authentication(cfg, args):
 COMMANDS = {
     "detect-capabilities": cmd_detect_capabilities,
     "create-context": cmd_create_context,
+    "include-in-context": cmd_include_in_context,
     "configure-authentication": cmd_configure_authentication,
     "configure-session-management": cmd_configure_session_management,
     "configure-verification": cmd_configure_verification,
@@ -752,6 +838,9 @@ def build_parser():
     p.add_argument("--poll-headers", dest="poll_headers")
     p.add_argument("--poll-frequency", dest="poll_frequency")
     p.add_argument("--poll-frequency-units", dest="poll_frequency_units")
+    p.add_argument("--regex", action="append", default=[],
+                   help="repeatable include regex for include-in-context (the run's scope "
+                        "boundary; one per allowed host)")
     p.add_argument("--config-params", dest="config_params",
                    help="verbatim ZAP *ConfigParams string (values already URL-encoded)")
     p.add_argument("--param", action="append", default=[],

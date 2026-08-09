@@ -25,9 +25,22 @@
    **`zap_auth.py` に `auto` を渡さない**（`configure-authentication` は `auto` を拒否する）。
    - primary は **Browser Based Authentication**（SPA/CSRF/JSに対応しつつ ZAP が自動再認証を持つ）。
    - ZAP が扱えないフローは **Playwright ログイン**を fallback とする（下記「退化の帰結」）。
-3. **Context 作成** → **認証方式設定** → **Session Management 設定** → **Verification 設定** →
-   **User 作成** → **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
+3. **Context 作成** → **スコープ登録（`include-in-context`）** → **認証方式設定** →
+   **Session Management 設定** → **Verification 設定** → **User 作成** →
+   **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
    → **User を有効化**（`set-user-enabled`）→ 必要なら **forced-user ON**。
+
+   **スコープ登録は省略できない。** ZAP は「Context に含まれる URL」にしか認証を適用しないため、
+   include が空だと**認証設定はすべて無効**になる。実測（同一手順で include の有無だけを変えた比較）:
+
+   | | include なし | include あり |
+   |---|---|---|
+   | ログイン試行 | **0回** | 1回 |
+   | 実際の応答 | **401（未認証で送信）** | 200 |
+   | `spider-as-user` | `url_not_in_context` | 正常 |
+
+   1行目・2行目に**エラーは出ない**（黙って未認証になる）。include 正規表現は工程3のスコープ制御と
+   同じもの（`references/zap-integration.md`「スコープ制御」）を使う。
    **この順序は必須**：`setAuthenticationMethod` は検証設定を既定へリセットするため
    （実測：POLL_URL＋指標が EACH_RESP＋指標なしに戻る）、認証方式を後から設定し直すと
    検証設定が黙って消える。やり直す場合は `configure-verification` も必ず再実行する。

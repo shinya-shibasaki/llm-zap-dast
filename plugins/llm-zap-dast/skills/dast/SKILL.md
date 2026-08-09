@@ -139,9 +139,12 @@ disable-model-invocation: true
 
 - **判断はLLM、反映は `scripts/zap_auth.py`**（判断しない薄いラッパ）。方式は `detect-capabilities`
   で対応を確認し、`method: auto` は**具体方式へ解決してから**スクリプトへ渡す（`auto` は拒否される）。
-- Context/認証方式/Session Management/Verification/User を設定し、資格情報を env 変数名から読む
-  （`set-credentials`：**値は印字・保存しない**）。**認証方式 → Verification の順を守る**
-  （逆順・やり直しは検証設定を消す）。
+- Context/**スコープ登録**/認証方式/Session Management/Verification/User を設定し、資格情報を
+  env 変数名から読む（`set-credentials`：**値は印字・保存しない**）。**認証方式 → Verification の
+  順を守る**（逆順・やり直しは検証設定を消す）。
+- **スコープ登録（`include-in-context`）を省略しない。** ZAP は Context 内のURLにしか認証を
+  適用しないため、省くと**エラーも出ずに未認証でスキャンが進む**（実測：ログイン試行0回・401）。
+  ここで作った Context は**工程3でもそのまま使う**（作り直さない）。
 - **検証（Verification）は POLL_URL ＋ 認証専用エンドポイントを第一候補にする。** 指標は
   そのエンドポイントの「セッション有効時／無効時」の実応答を見て選ぶ（ソースは場所の手がかり）。
   `configure-verification` が返す **`applied: false` は「検証設定が入っていない」**を意味するので、
@@ -171,8 +174,10 @@ disable-model-invocation: true
 ZAPが利用可能になったら：
 
 1. 対象URLをZAPへ登録。
-2. **ZAP Contextを作成し、スコープ制御を適用** — include正規表現を `allowed_hosts` に限定；
-   スコープ外はスキャンしない；`exclude.paths` を Spider/Ajax/Passive/Active に適用。
+2. **ZAP Contextとスコープ制御** — **工程2.5で作成済みのContextがあれば、それを使う**
+   （Contextを作り直さない：認証設定はContextに紐づくため、別Contextを作ると認証が効かなくなる）。
+   無ければここで作成する。include正規表現を `allowed_hosts` に限定；スコープ外はスキャンしない；
+   `exclude.paths` を Spider/Ajax/Passive/Active に適用。
    **Protectedモード**を設定（ATTACKは決して使わない）。
 3. Traditional Spider。4. Passive Scan の完了を待つ。5. `scan.ajax_spider: true` なら
    Ajax Spider。6. 到達URL、HTTP履歴、アラートを取得。

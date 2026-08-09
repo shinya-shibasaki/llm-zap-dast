@@ -1,6 +1,7 @@
 """Unit tests for zap_auth.py invariants that need no live ZAP: the safety guards
 (no 'auto' into the script, gated Active Scan), evidence-not-verdict, and no credential
 leakage. Anything requiring a real ZAP is out of scope for the offline suite."""
+import json
 import os
 import sys
 
@@ -226,6 +227,98 @@ def test_configure_verification_reports_settings_that_did_not_land(monkeypatch):
 def test_compare_verification_tolerates_string_typed_numbers():
     """ZAP echoes pollFrequency back as a string; that is not a mismatch."""
     assert zap_auth.compare_verification({"pollFrequency": 60}, {"pollFrequency": "60"}) == {}
+
+
+def test_seed_url_adds_slash_only_to_a_bare_origin():
+    """Include regexes require '/' after the host, so a bare origin is out of context."""
+    assert zap_auth.seed_url("http://localhost:3000") == "http://localhost:3000/"
+    assert zap_auth.seed_url("https://h") == "https://h/"
+    # already canonical / has a path -> untouched
+    assert zap_auth.seed_url("http://localhost:3000/") == "http://localhost:3000/"
+    assert zap_auth.seed_url("http://localhost:3000/app") == "http://localhost:3000/app"
+    # not a URL -> untouched (never invent scope)
+    assert zap_auth.seed_url("") == ""
+    assert zap_auth.seed_url("localhost:3000") == "localhost:3000"
+
+
+def test_scan_as_user_seeds_a_canonical_url(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda cfg, f, c, k, n, params=None: seen.update({n: params})
+                        or {"ok": True})
+    cfg = {"target": {"base_url": "http://localhost:3000"}}
+
+    class Args:
+        context_id = "1"
+        user_id = "2"
+        url = None
+        context = "dast-run"
+        user_name = "u"
+        username = None
+        policy = None
+        gate_passed = True
+
+    zap_auth.cmd_spider_as_user(cfg, Args())
+    assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
+    zap_auth.cmd_active_scan_as_user(cfg, Args())
+    assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
+    zap_auth.cmd_ajax_spider_as_user(cfg, Args())
+    assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
+
+
+def test_parse_include_regexs_handles_both_shapes():
+    """ZAP hands includeRegexs back as a JSON array or as a string holding one."""
+    rgx = r"^https?://localhost(:\d+)?/.*$"
+    assert zap_auth.parse_include_regexs([rgx]) == [rgx]
+    assert zap_auth.parse_include_regexs(json.dumps([rgx])) == [rgx]
+    assert zap_auth.parse_include_regexs("[]") == []
+    assert zap_auth.parse_include_regexs(None) == []
+
+
+def test_include_in_context_requires_a_regex():
+    """An empty include list means ZAP applies no authentication at all, silently."""
+    class Args:
+        context = "dast-run"
+        regex = []
+
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.cmd_include_in_context({}, Args())
+
+
+def test_include_in_context_confirms_the_scope_zap_holds(monkeypatch):
+    seen = {}
+    rgx = r"^https?://localhost(:\d+)?/.*$"
+
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        seen.setdefault(name, []).append(params)
+        if kind == "view":
+            return {"ok": True, "data": {"context": {"includeRegexs": [rgx]}}}
+        return {"ok": True}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+
+    class Args:
+        context = "dast-run"
+        regex = [rgx]
+
+    out = zap_auth.cmd_include_in_context({}, Args())
+    assert seen["includeInContext"][0] == {"contextName": "dast-run", "regex": rgx}
+    assert out["applied"] is True and out["include_regexs"] == [rgx]
+
+
+def test_include_in_context_reports_a_regex_that_did_not_land(monkeypatch):
+    def fake(cfg, fmt, comp, kind, name, params=None):
+        if kind == "view":
+            return {"ok": True, "data": {"context": {"includeRegexs": []}}}
+        return {"ok": True}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+
+    class Args:
+        context = "dast-run"
+        regex = ["^http://localhost/.*$"]
+
+    assert zap_auth.cmd_include_in_context({}, Args())["applied"] is False
 
 
 def test_ajax_spider_uses_names(monkeypatch):

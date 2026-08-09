@@ -127,6 +127,17 @@ Playwright の Chromium とは別物で、相互に代替できない（README�
 
 `allowed_hosts` ＋ `base_url` から推奨する include 正規表現：ホストをエスケープし、スキーマと
 任意ポートを許可する。例：`^https?://localhost(:\d+)?/.*$`。許可ホストごとに1つ追加する。
+**ホスト直後の `/` は必須**（これがホスト境界を固定する。緩めると `localhost.example.com` の
+ような別ホストを取り込む書き間違いを誘発する）。
+
+**Contextは run で1つ。** 工程2.5（認証）で作成した Context を工程3以降でも使う。認証設定は
+Context に紐づくため、工程3で作り直すと認証が無効になる。スコープ登録は認証より先に必要なので
+（`references/authentication.md`）、実際の登録は工程2.5 の `zap_auth.py include-in-context` で行う。
+
+**末尾スラッシュの注意**：上の正規表現はホスト直後の `/` を要求するため、`http://localhost:3000`
+（パスなし）は**スコープ外**と判定され、`scanAsUser` は `url_not_in_context` で失敗する。
+`target.base_url` はスラッシュ無しで書かれるので、`zap_auth.py` は scanner に渡すURLに `/` を
+補う（`seed_url`）。HTTPではパス無し＝`/` なので意味は変わらず、スコープも変わらない。
 
 ## Playwright を ZAP 経由で（工程4）
 
