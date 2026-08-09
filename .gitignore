@@ -13,6 +13,10 @@ llm-zap-dast-implementation-instructions.md
 llm-zap-dast-v2-auth-plan.md
 認証の実装方法案.md
 認証の実装方法案-改訂版.md
+skill-improvement-proposal.md
+
+# WSL marks files copied from Windows with an alternate data stream
+*:Zone.Identifier
 
 # Python
 __pycache__/
