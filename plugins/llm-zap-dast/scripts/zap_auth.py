@@ -20,6 +20,17 @@ mechanically applies those settings to ZAP's REST API. Design rules enforced her
     all, requires an explicit `--strategy`, and reads the context back to confirm the
     settings actually landed (`applied`). Both refusals guard measured, silent failures —
     see resolve_checking_strategy() and require_indicator().
+  * `include-in-context` must be called: ZAP applies authentication only inside the context,
+    so an empty include list makes every other auth setting silently inert.
+  * `verify-canary` asks ZAP what IT concluded (stats.auth.state.*) instead of re-deriving a
+    verdict from response text, and `spider-as-user` / `ajax-spider-as-user` /
+    `active-scan-as-user` re-read those counters themselves and refuse to launch during a
+    re-authentication storm. The guard is not a caller-supplied flag on purpose — a flag
+    would be self-attestation by the same actor that chose the configuration.
+  * Exit code: 0 = did what it promises; 1 = did not (`applied`/`ok`/`complete` false);
+    2 = caller misuse. With `authentication.enabled: true` the skill STOPS on 1 rather than
+    continuing unauthenticated — an authenticated run that quietly turns anonymous reports
+    findings whose authentication state is unknown.
 
 API names/params below were verified against a live ZAP 2.17.0. Non-obvious facts:
   * the "authentication verification strategy" is `context/action/setContextCheckingStrategy`
@@ -414,6 +425,146 @@ def require_indicator(logged_in, logged_out) -> None:
         )
 
 
+# ZAP's own verdict census. Each evaluated response lands in exactly one state counter, so
+# these say what ZAP concluded — no string matching of our own required. Verified on 2.17.0.
+AUTH_STATE_KEYS = ("stats.auth.state.loggedin", "stats.auth.state.loggedout",
+                   "stats.auth.state.unknown", "stats.auth.state.assumedin",
+                   "stats.auth.state.noindicator")
+AUTH_LOGIN_KEYS = ("stats.auth.success", "stats.auth.failure")
+# Thresholds derived from measurement, not taste. A healthy config logs in exactly once for a
+# fresh user (0 on a repeat), so more than one login over a short canary means ZAP is
+# re-authenticating. For the running ratio: a healthy EACH_RESP run measured 0-5%
+# logged-out responses, a storming one 48%. The minimum sample mirrors what ZAP's own
+# insights add-on requires before it will judge an auth failure rate.
+CANARY_MAX_LOGINS = 1
+LOGGED_OUT_RATIO_LIMIT = 25.0
+MIN_AUTH_SAMPLE = 10
+
+
+def flatten_site_stats(data):
+    """Parse ZAP's allSitesStats into {site: {key: value}}.
+
+    VERIFIED ON ZAP 2.17.0 — the shape is nested lists, not the dict it looks like:
+        {"allSitesStats": [ {"http://host:port": [ {"stats.auth.x": 1}, ... ]} ]}
+    Treating it as a dict yields an empty result, which reads as "no auth failures" and is
+    exactly the vacuous pass this census exists to prevent.
+    """
+    out = {}
+    entries = data.get("allSitesStats") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return out
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for site, values in entry.items():
+            bucket = out.setdefault(str(site), {})
+            items = values if isinstance(values, list) else [values]
+            for item in items:
+                if isinstance(item, dict):
+                    for key, val in item.items():
+                        try:
+                            bucket[str(key)] = bucket.get(str(key), 0) + int(val)
+                        except (TypeError, ValueError):
+                            continue
+    return out
+
+
+def site_key_for(sites, base_url):
+    """Pick the stats site that matches target.base_url (scheme + netloc)."""
+    try:
+        want = urlparse(str(base_url or ""))
+    except ValueError:
+        return None
+    if not want.netloc:
+        return None
+    for site in sites:
+        try:
+            got = urlparse(str(site))
+        except ValueError:
+            continue
+        if got.scheme == want.scheme and got.netloc == want.netloc:
+            return site
+    return None
+
+
+def summarize_auth_counters(counters: dict) -> dict:
+    """Turn raw stats.auth.* into the two numbers a decision needs."""
+    counters = counters or {}
+    states = {k.rsplit(".", 1)[-1]: int(counters.get(k, 0) or 0) for k in AUTH_STATE_KEYS}
+    logins = sum(int(counters.get(k, 0) or 0) for k in AUTH_LOGIN_KEYS)
+    evaluated = sum(states.values())
+    logged_out = states["loggedout"]
+    return {
+        "states": states,
+        "logins": logins,
+        "evaluated": evaluated,
+        "logged_out": logged_out,
+        "logged_out_ratio": round(100.0 * logged_out / evaluated, 1) if evaluated else None,
+    }
+
+
+def storm_verdict(summary: dict) -> dict:
+    """Is ZAP re-authenticating its way through the scan? Ratio-based, with a minimum sample.
+
+    Only the storm direction is decidable this way. A LOW logged-out ratio is not proof the
+    verification config is right — it only says nothing went wrong on the responses ZAP has
+    actually judged so far.
+    """
+    ratio = summary.get("logged_out_ratio")
+    enough = (summary.get("evaluated") or 0) >= MIN_AUTH_SAMPLE
+    storm = bool(enough and ratio is not None and ratio >= LOGGED_OUT_RATIO_LIMIT)
+    return {
+        "storm": storm,
+        "sample_sufficient": enough,
+        "logged_out_ratio": ratio,
+        "limit": LOGGED_OUT_RATIO_LIMIT,
+        "note": ("re-authentication storm: ZAP judged this share of responses logged-out"
+                 if storm else
+                 "no storm signal; a low ratio does NOT prove the indicators are correct"),
+    }
+
+
+def canary_verdict(before: dict, after: dict, strategy, driven: int) -> dict:
+    """Compare two counter snapshots taken around a small burst of authenticated traffic.
+
+    Measured on ZAP 2.17.0:
+      * a healthy config logs in exactly ONCE for a fresh user, and zero times on a repeat
+        canary, whatever the strategy -> more than one login means re-authentication;
+      * under POLL_URL a healthy first canary always polls, so loggedin+assumedin > 0;
+        a config whose indicators never match polls zero times and reports "authenticated"
+        forever (the silent-anonymisation shape) -> loggedin+assumedin == 0 catches it.
+        Both are 0 for EACH_* even when healthy, so that check is POLL_URL only.
+    """
+    b, a = summarize_auth_counters(before), summarize_auth_counters(after)
+    delta_states = {k: a["states"][k] - b["states"][k] for k in a["states"]}
+    logins = a["logins"] - b["logins"]
+    is_poll = str(strategy or "").upper() == "POLL_URL"
+    verified = delta_states["loggedin"] + delta_states["assumedin"]
+    problems = []
+    if logins > CANARY_MAX_LOGINS:
+        problems.append(
+            f"re-authentication storm: {logins} logins for {driven} driven URLs "
+            f"(a healthy config logs in at most {CANARY_MAX_LOGINS} time)")
+    if is_poll and verified == 0:
+        problems.append(
+            "verification never ran: ZAP polled 0 times, so it cannot notice an expired "
+            "session (indicators that match nothing, or a poll URL ZAP never reaches)")
+    if delta_states["noindicator"] > 0:
+        problems.append(
+            f"{delta_states['noindicator']} responses judged with NO indicator configured — "
+            "ZAP answers 'authenticated' unconditionally in that branch")
+    return {
+        "driven_urls": driven,
+        "logins": logins,
+        "state_delta": delta_states,
+        "strategy": str(strategy or "").upper() or None,
+        "problems": problems,
+        "ok": not problems,
+        "limits": ("a clean canary only covers the response shapes actually driven; under "
+                   "EACH_* it says nothing about shapes that were not"),
+    }
+
+
 def parse_include_regexs(value):
     """Normalise ZAP's includeRegexs into a list of strings.
 
@@ -660,7 +811,96 @@ def cmd_set_forced_user(cfg, args):
     return out
 
 
+def _read_auth_counters(cfg):
+    """Return (per_site, global_only, site_key_for_target). Both views are needed: most
+    stats.auth.* keys are site-scoped, a few are written globally."""
+    allsites = zap_call(cfg, "JSON", "stats", "view", "allSitesStats",
+                        {"keyPrefix": "stats.auth"})
+    glob = zap_call(cfg, "JSON", "stats", "view", "stats", {"keyPrefix": "stats.auth"})
+    sites = flatten_site_stats(_get(allsites, "data") or {})
+    key = site_key_for(sites, _get(cfg, "target", "base_url", default=""))
+    return sites, (_get(glob, "data", "stats") or {}), key
+
+
+def cmd_auth_state(cfg, args):
+    """Report ZAP's own authentication verdict counters. Raw; no judgement here."""
+    sites, glob, key = _read_auth_counters(cfg)
+    counters = sites.get(key, {}) if key else {}
+    return {
+        "target_site": key,
+        "counters": counters,
+        "summary": summarize_auth_counters(counters),
+        "all_sites": sites,
+        "global_scope": glob,
+    }
+
+
+def cmd_verify_canary(cfg, args):
+    """Drive a few authenticated requests and read ZAP's verdicts before/after.
+
+    This is the pre-flight check for step 2.5: it catches a re-authentication storm and a
+    verification that never runs BEFORE the spider turns either one into a whole scan's worth
+    of damage. It needs a HETEROGENEOUS URL set — measured on ZAP 2.17.0, a broken config and
+    a healthy one produce bit-identical counters when the canary drives only one kind of
+    response (JSON-only: both give logins=1, loggedout=0; the same broken config over HTML
+    pages gives logins=11, loggedout=10). Pass at least an HTML page, an authenticated
+    JSON/API endpoint, and a URL that returns a non-auth error.
+    """
+    urls = [u for u in (args.canary_url or []) if u]
+    if len(urls) < 3:
+        raise AuthUsageError(
+            "verify-canary requires at least 3 --canary-url values covering DIFFERENT "
+            "response shapes (an HTML page, an authenticated JSON/API endpoint, and a "
+            "non-auth error such as a 404). With a single shape a storming config and a "
+            "healthy one return identical counters, so the check would pass vacuously."
+        )
+    ctx = {}
+    if args.context:
+        read = zap_call(cfg, "JSON", "context", "view", "context",
+                        {"contextName": args.context})
+        ctx = _get(read, "data", "context") or {}
+    before, _g, key = _read_auth_counters(cfg)
+    accessed = {}
+    for url in urls:
+        res = zap_call(cfg, "JSON", "core", "action", "accessUrl",
+                       {"url": seed_url(url), "followRedirects": "false"})
+        accessed[url] = bool(res.get("ok"))
+    after, _g2, key2 = _read_auth_counters(cfg)
+    site = key or key2
+    verdict = canary_verdict(before.get(site, {}), after.get(site, {}),
+                             ctx.get("checkingStrategy"), len(urls))
+    verdict["target_site"] = site
+    verdict["urls_driven"] = accessed
+    if not all(accessed.values()):
+        verdict["problems"] = list(verdict["problems"]) + [
+            "some canary URLs could not be fetched through ZAP; the counters below cover "
+            "fewer response shapes than requested"]
+        verdict["ok"] = False
+    return verdict
+
+
+def _refuse_if_storming(cfg, command):
+    """Consumer-side guard: an authenticated scan checks ZAP's counters itself.
+
+    Deliberately NOT a flag the caller passes. A flag would be self-attestation — the same
+    actor that chose the configuration would assert it is fine. Reading ZAP's own verdicts at
+    call time cannot be talked past.
+    """
+    sites, _glob, key = _read_auth_counters(cfg)
+    summary = summarize_auth_counters(sites.get(key, {}) if key else {})
+    verdict = storm_verdict(summary)
+    if verdict["storm"]:
+        raise AuthUsageError(
+            f"{command} refused: ZAP judged {verdict['logged_out_ratio']}% of responses for "
+            f"{key} 'logged out' (limit {LOGGED_OUT_RATIO_LIMIT}%), i.e. it is "
+            "re-authenticating instead of holding a session. Running now would flood the "
+            "target with logins and produce results of unknown authentication state. Fix the "
+            "verification config (references/authentication.md) and retry."
+        )
+
+
 def cmd_spider_as_user(cfg, args):
+    _refuse_if_storming(cfg, "spider-as-user")
     return zap_call(cfg, "JSON", "spider", "action", "scanAsUser",
                     {"contextId": args.context_id, "userId": args.user_id,
                      "url": seed_url(args.url or _get(cfg, "target", "base_url", default=""))})
@@ -674,6 +914,7 @@ def cmd_ajax_spider_as_user(cfg, args):
             "ajax-spider-as-user requires --context (name) and --user-name; the ZAP "
             "ajaxSpider API takes names, not ids"
         )
+    _refuse_if_storming(cfg, "ajax-spider-as-user")
     return zap_call(cfg, "JSON", "ajaxSpider", "action", "scanAsUser",
                     {"contextName": args.context,
                      "userName": args.user_name or args.username,
@@ -688,6 +929,7 @@ def cmd_active_scan_as_user(cfg, args):
             "scan.active_scan AND authentication.active_scan true AND step-5 user "
             "confirmation. Refusing to launch."
         )
+    _refuse_if_storming(cfg, "active-scan-as-user")
     return zap_call(cfg, "JSON", "ascan", "action", "scanAsUser",
                     {"contextId": args.context_id, "userId": args.user_id,
                      "url": seed_url(args.url or _get(cfg, "target", "base_url", default="")),
@@ -809,6 +1051,8 @@ COMMANDS = {
     "set-user-enabled": cmd_set_user_enabled,
     "set-credentials": cmd_set_credentials,
     "test-authentication": cmd_test_authentication,
+    "auth-state": cmd_auth_state,
+    "verify-canary": cmd_verify_canary,
     "set-forced-user": cmd_set_forced_user,
     "spider-as-user": cmd_spider_as_user,
     "ajax-spider-as-user": cmd_ajax_spider_as_user,
@@ -838,6 +1082,10 @@ def build_parser():
     p.add_argument("--poll-headers", dest="poll_headers")
     p.add_argument("--poll-frequency", dest="poll_frequency")
     p.add_argument("--poll-frequency-units", dest="poll_frequency_units")
+    p.add_argument("--canary-url", dest="canary_url", action="append", default=[],
+                   help="repeatable URL for verify-canary; pass at least 3 covering "
+                        "DIFFERENT response shapes (HTML page / authenticated JSON API / "
+                        "non-auth error)")
     p.add_argument("--regex", action="append", default=[],
                    help="repeatable include regex for include-in-context (the run's scope "
                         "boundary; one per allowed host)")
@@ -884,9 +1132,13 @@ def main(argv=None) -> int:
     else:
         for k, v in result.items():
             print(f"{k}: {v}")
-    # `applied: False` means ZAP does not hold the configuration we asked for. Exit non-zero
-    # so a caller that only checks the exit status cannot mistake it for a configured run.
-    if isinstance(result, dict) and result.get("applied") is False:
+    # Exit non-zero whenever the command could not deliver what it promises, so a caller that
+    # only checks the exit status cannot mistake it for success:
+    #   applied  — ZAP does not hold the configuration we asked for
+    #   ok       — the ZAP call itself was rejected, or the canary found a problem
+    #   complete — teardown left credential-bearing state behind
+    if isinstance(result, dict) and any(result.get(k) is False
+                                        for k in ("applied", "ok", "complete")):
         return 1
     return 0
 

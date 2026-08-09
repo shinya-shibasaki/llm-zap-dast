@@ -321,6 +321,120 @@ def test_include_in_context_reports_a_regex_that_did_not_land(monkeypatch):
     assert zap_auth.cmd_include_in_context({}, Args())["applied"] is False
 
 
+# --- ZAP's own verdict counters (the detection signal) ------------------------
+# Shape verified on a live ZAP 2.17.0: nested LISTS, not the dict it looks like.
+LIVE_ALLSITES = {"allSitesStats": [{"http://127.0.0.1:18500": [
+    {"stats.auth.state.assumedin": 19, "stats.auth.state.loggedin": 2,
+     "stats.auth.state.loggedout": 1, "stats.auth.success": 2}]}]}
+
+
+def test_flatten_site_stats_reads_the_live_nested_shape():
+    """Treating allSitesStats as a dict yields {} — which reads as 'no auth failures'."""
+    flat = zap_auth.flatten_site_stats(LIVE_ALLSITES)
+    assert flat["http://127.0.0.1:18500"]["stats.auth.state.loggedout"] == 1
+    assert zap_auth.flatten_site_stats({}) == {}
+    assert zap_auth.flatten_site_stats({"allSitesStats": {}}) == {}
+
+
+def test_site_key_matches_target_base_url():
+    sites = zap_auth.flatten_site_stats(LIVE_ALLSITES)
+    assert zap_auth.site_key_for(sites, "http://127.0.0.1:18500") == "http://127.0.0.1:18500"
+    assert zap_auth.site_key_for(sites, "http://127.0.0.1:18500/rest") is not None
+    assert zap_auth.site_key_for(sites, "http://other:1") is None
+    assert zap_auth.site_key_for(sites, "") is None
+
+
+def test_storm_verdict_needs_a_minimum_sample():
+    """A couple of logged-out responses must not condemn a run on its own."""
+    tiny = zap_auth.summarize_auth_counters({"stats.auth.state.loggedout": 2})
+    assert zap_auth.storm_verdict(tiny)["storm"] is False
+
+    storming = zap_auth.summarize_auth_counters(
+        {"stats.auth.state.loggedout": 10, "stats.auth.state.unknown": 11})
+    v = zap_auth.storm_verdict(storming)
+    assert v["storm"] is True and v["logged_out_ratio"] > zap_auth.LOGGED_OUT_RATIO_LIMIT
+
+    healthy = zap_auth.summarize_auth_counters(
+        {"stats.auth.state.unknown": 21, "stats.auth.state.loggedout": 1})
+    assert zap_auth.storm_verdict(healthy)["storm"] is False
+
+
+def _counters(**kw):
+    return {f"stats.auth.{k.replace('_', '.')}": v for k, v in kw.items()}
+
+
+def test_canary_flags_a_re_auth_storm():
+    """Measured: a healthy config logs in exactly once; 11 logins over 10 URLs is a storm."""
+    before = _counters(success=1)
+    after = _counters(success=12, state_loggedout=10, state_unknown=11)
+    v = zap_auth.canary_verdict(before, after, "EACH_RESP", driven=10)
+    assert v["ok"] is False and v["logins"] == 11
+    assert any("storm" in p for p in v["problems"])
+
+
+def test_canary_flags_verification_that_never_ran():
+    """POLL_URL with 0 polls: ZAP reports 'authenticated' forever and never re-checks."""
+    before = _counters(success=0)
+    after = _counters(success=1, state_unknown=11)
+    v = zap_auth.canary_verdict(before, after, "POLL_URL", driven=3)
+    assert v["ok"] is False
+    assert any("never ran" in p for p in v["problems"])
+
+
+def test_canary_accepts_a_healthy_poll_url_run():
+    before = _counters(success=0)
+    after = _counters(success=1, state_loggedin=1, state_assumedin=10)
+    assert zap_auth.canary_verdict(before, after, "POLL_URL", driven=3)["ok"] is True
+
+
+def test_canary_does_not_demand_polls_for_each_resp():
+    """loggedin/assumedin are always 0 under EACH_* even when healthy — no false alarm."""
+    before = _counters(success=0)
+    after = _counters(success=1, state_unknown=11)
+    assert zap_auth.canary_verdict(before, after, "EACH_RESP", driven=3)["ok"] is True
+
+
+def test_canary_flags_responses_judged_without_any_indicator():
+    before = _counters(success=0)
+    after = _counters(success=1, state_noindicator=11)
+    v = zap_auth.canary_verdict(before, after, "EACH_RESP", driven=3)
+    assert v["ok"] is False and any("NO indicator" in p for p in v["problems"])
+
+
+def test_verify_canary_refuses_a_single_response_shape():
+    """One shape makes a storming config and a healthy one indistinguishable (measured)."""
+    class Args:
+        canary_url = ["http://t/a.json", "http://t/b.json"]
+        context = "dast-run"
+
+    with pytest.raises(zap_auth.AuthUsageError):
+        zap_auth.cmd_verify_canary({}, Args())
+
+
+def test_authenticated_scans_refuse_during_a_storm(monkeypatch):
+    """The guard is the consumer's own read of ZAP's counters, not a caller flag."""
+    storm = {"allSitesStats": [{"http://t:80": [
+        {"stats.auth.state.loggedout": 10, "stats.auth.state.unknown": 11}]}]}
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda cfg, f, c, k, n, params=None: {"ok": True, "data": storm})
+    cfg = {"target": {"base_url": "http://t:80"}}
+
+    class Args:
+        context_id = "1"
+        user_id = "2"
+        url = None
+        context = "dast-run"
+        user_name = "u"
+        username = None
+        policy = None
+        gate_passed = True
+
+    for fn in (zap_auth.cmd_spider_as_user, zap_auth.cmd_ajax_spider_as_user,
+               zap_auth.cmd_active_scan_as_user):
+        with pytest.raises(zap_auth.AuthUsageError, match="refused"):
+            fn(cfg, Args())
+
+
 def test_ajax_spider_uses_names(monkeypatch):
     seen = {}
     monkeypatch.setattr(zap_auth, "zap_call",

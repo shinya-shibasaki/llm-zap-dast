@@ -57,6 +57,12 @@ disable-model-invocation: true
 なし、ATTACKモード指定）は**停止**する — スキップしない。fail-soft は「機能が欠けている」ときの
 挙動であり、「安全が担保できない」ときには適用しない。`references/safety-policy.md` を参照。
 
+**fail-soft の例外：`authentication.enabled: true`。** 認証付きで診断できないと分かったら
+（ZAPの認証機能が使えない／確認が曖昧／ストーム検知／セッション失効）**停止する** — 未認証へ
+degrade しない。認証有効中に **ZAPが到達不能になった場合も同様**（「ZAP不達」を機能の欠落として
+スキップ扱いにしない。差し替えのZAPを自動起動して匿名のまま続行しない）。理由：利用者は認証付きの
+結果を求めており、未認証の結果は別物だから。工程2.5 を参照。
+
 ---
 
 ## 実行準備（工程0の作業の前に）
@@ -104,6 +110,11 @@ disable-model-invocation: true
      書かれていないこと（`validate_config.py` が拒否）／`authentication.active_scan` の値／
      `login_url`・`verification_url` が `exclude.paths` に飲まれていないこと。**認証情報の値は
      出力しない。**
+   - **認証の前提をここで判定して早期に停止する。** `authentication.enabled: true` で
+     認証付きの診断が成立しないと分かっているなら（主方式 Browser Based Authentication に
+     必要な `browser_firefox` が無い、ZAP不達で認証設定自体ができない等）、工程2.5 まで
+     進まず**ここで停止**する。認証有効時の失敗は fail-soft の対象外（工程2.5 と
+     `references/safety-policy.md`）。無駄な工程を走らせてから止めるより早い。
 3. 設定が不足・不十分な場合：**推測せず、Active Scanを開始しない。** 不足項目を列挙する。
    ギャップが安全に関わるなら停止する。`dast.yaml` が存在しない場合は、上記「設定生成」に従って
    生成を提案する（断られたら既定値で続行）。
@@ -133,9 +144,20 @@ disable-model-invocation: true
 
 ## 工程2.5 — 認証設定と認証確認（`authentication.enabled` 時のみ）（`references/authentication.md`）
 
-**best-effort。** `authentication.enabled: true` のとき、工程2と工程3の間で実行する。目的は
-「LLMが対象を解析してZAPの認証機能を選択・設定し、認証後DASTをどこまで自律実行できるか」の検証。
-失敗しても run は止めず（未認証で継続）、**成功したように扱わず**、未実施の工程と理由を記録する。
+**`authentication.enabled: true` は「認証付きで診断する」という約束である。** 工程2と工程3の
+間で実行し、**認証付きで診断できないと分かった時点で run を停止する**（未認証で継続しない）。
+未認証の結果が欲しい場合は `authentication.enabled: false` を指定する — 設定が結果の種類を決める。
+
+停止する条件（いずれも「認証付きで診断できない」）：
+- ZAPの認証機能が使えない（対応方式が無い／前提のFirefoxが無い等）。**Playwrightログインへ
+  退避しない** — それはZAP User としての認証付きSpider/Active Scanができないということ。
+- 認証確認が曖昧、または失敗。
+- `verify-canary` が再認証ストーム／検証が一度も走っていない状態を検知（下記）。
+- スキャン中にセッションが失効し回復できない（`max_attempts` 枯渇を含む）。
+
+**停止しても後始末（`clear-authentication`）は必ず実行する** — ZAP User には平文の資格情報が
+残るため。停止時は、何を検知したか（カウンタの実数）・どこまで実施したか・次に何を直すべきかを
+`authentication.md` と `run.log` に記録し、利用者に提示する。
 
 - **判断はLLM、反映は `scripts/zap_auth.py`**（判断しない薄いラッパ）。方式は `detect-capabilities`
   で対応を確認し、`method: auto` は**具体方式へ解決してから**スクリプトへ渡す（`auto` は拒否される）。
@@ -152,8 +174,15 @@ disable-model-invocation: true
 - **差分確認（安全の急所・必須）**：`test-authentication` は**生の証拠のみ**を返す。判定はLLM＋
   固定差分ルール——**指標が「認証時に有り・未認証時に無し」**であること（ステータスのみ／存在のみで
   合格にしない）。身元依存のプローブは**意図したユーザーか**も確認する。
-- **確認できた場合だけ**認証後工程へ進む。**曖昧・失敗なら認証済みとして扱わない。**
-  `max_attempts` 枯渇・認証失効は「認証失敗→認証部分を停止」（静かに匿名継続しない）。
+- **カナリア（`verify-canary`）で、スパイダー前にZAP自身の判定を確認する。** 応答文字列を
+  自前で判定するのではなく、ZAPが数えている判定カウンタ（`stats.auth.state.*`）を読む。
+  **異種のURLを3本以上**渡すこと（HTML画面／認証後のJSON API／認証と無関係なエラー）— 同種だけだと
+  壊れた設定と正常な設定が同じ数値になる（実測）。ストーム／検証が一度も走っていない状態を検知したら
+  **run を停止**する。
+- **確認できた場合だけ**認証後工程へ進む。**曖昧・失敗なら認証済みとして扱わず run を停止する。**
+  `max_attempts` 枯渇・認証失効も停止（静かに匿名継続しない）。
+- 認証付きスキャン（`spider-as-user` / `ajax-spider-as-user` / `active-scan-as-user`）は、
+  実行時に自分でカウンタを確認し、ストーム中なら**起動を拒否**する（呼び出し側の申告ではない）。
 - 成果物 `reports/dast/<run-id>/authentication.md` に、方式・根拠・認証成否の証拠・未認証/認証後の
   カバレッジ差・制約を記録（機微はマスク）。チェックポイント。
 
