@@ -9,7 +9,10 @@ mechanically applies those settings to ZAP's REST API. Design rules enforced her
     concrete method before calling the script.
   * `test-authentication` returns RAW EVIDENCE (statuses, indicator-match booleans, identity
     echo), never a pass/fail verdict. The verdict is the caller's job, using a differential
-    rule (indicator present in the authed response AND absent in the unauth response).
+    rule (indicator present in the authed response AND absent in the unauth response). It
+    reads both sides the SAME way — response header and body, redirects followed on both —
+    and reports `evidence_complete: false` (exit 1) when either read did not happen, since a
+    missing response is not an absent indicator.
   * `active-scan-as-user` requires `--gate-passed` — the authenticated Active Scan double
     gate + step-5 confirmation live above this script; it will not launch otherwise.
   * `set-credentials` reads credentials from environment variables by NAME and never prints
@@ -44,7 +47,23 @@ API names/params below were verified against a live ZAP 2.17.0. Non-obvious fact
   * `setAuthenticationMethod` RESETS the whole verification config — measured: POLL_URL +
     indicators came back as EACH_RESP with both patterns empty — so verification must be
     configured AFTER the authentication method, and re-running the method setting silently
-    discards it.
+    discards it;
+  * ZAP matches the logged-in/out patterns against the response HEADER as well as the body —
+    measured on a session app whose body is identical either way: an indicator that exists
+    only in the `X-Authenticated-User` header gives one login over five requests, a
+    body-only indicator that never matches gives six (a storm). `test-authentication`
+    matches the same surface so its evidence agrees with the scanner;
+  * `core/action/accessUrl` RETURNS the message it sent (request/response headers, body,
+    history id) — the response does not have to be searched for in the history afterwards,
+    which is what used to let ZAP's own login traffic stand in for the page under test;
+  * the indicators are REGULAR EXPRESSIONS (`loggedInIndicatorRegex`) — measured:
+    `Signed ?in as` gives a healthy single login against "Signed in as alice", where a
+    literal match would fail and ZAP would storm;
+  * `core/view/messages` takes `start` as an ID, not an offset — `start=numberOfMessages`
+    returns the last message from BEFORE the call;
+  * ZAP decodes a charset-less `text/html` body as UTF-8, while `requests` applies the RFC
+    default of ISO-8859-1 — reading the two sides with different decoders turned one
+    anonymous page into a perfect differential.
 
 Usage:
     python3 zap_auth.py --config dast.yaml <command> [options] [--json]
@@ -56,8 +75,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
-from urllib.parse import quote, urlencode, urlparse
+from typing import NamedTuple
+from urllib.parse import (quote, unquote, urlencode, urljoin, urlparse, urlsplit,
+                          urlunsplit)
 
 # LLM-facing method names -> ZAP authentication method API names.
 AUTH_METHOD_MAP = {
@@ -77,6 +99,16 @@ SESSION_METHOD_MAP = {
 # authentication/action/setAuthenticationVerificationStrategy endpoint.
 CHECKING_STRATEGIES = {"EACH_REQ", "EACH_RESP", "EACH_REQ_RESP", "AUTO_DETECT", "POLL_URL"}
 POLL_FREQUENCY_UNITS = {"REQUESTS", "SECONDS"}
+# Redirect hops test-authentication follows, on BOTH sides of the differential read. A
+# session app answers an unauthenticated request with a redirect to the login page and often
+# answers the authenticated one with a redirect too (trailing slash, post-login landing), so
+# a limit of 1 would compare a login page against an empty 301 body.
+MAX_REDIRECT_HOPS = 5
+DEFAULT_PORTS = {"http": 80, "https": 443}
+# Path segments that end a session. Redirect targets matching these are never followed, with
+# or without `exclude.paths` — see is_session_ending().
+LOGOUT_SEGMENTS = {"logout", "log-out", "log_out", "logoff", "signout", "sign-out",
+                   "sign_out", "signoff"}
 # What context/view/context calls the fields we set through three different actions.
 VERIFICATION_READBACK_KEYS = ("checkingStrategy", "loggedInPattern", "loggedOutPattern",
                               "pollUrl", "pollData", "pollHeaders", "pollFrequency",
@@ -120,24 +152,148 @@ def _api_key(cfg):
     return os.environ.get(str(env_name), "").strip() if env_name else ""
 
 
+def decode_body(raw: bytes, content_type) -> str:
+    """Decode a response body the way ZAP does, not the way RFC 2616 says.
+
+    Measured on a live ZAP against a `text/html` page with NO charset parameter: ZAP decoded
+    it as UTF-8 while `requests` applied the RFC default of ISO-8859-1, so a Japanese page
+    came back as mojibake on the direct side ONLY. The consequence is a false pass, not a
+    cosmetic one: two reads of the SAME anonymous page then produced
+    `indicator_in_authed: true` / `indicator_in_unauth: false` — a perfect differential built
+    entirely out of a decoding difference. Anything undecodable falls back to replacement
+    characters so a binary body cannot fail the read outright.
+    """
+    charset = None
+    for part in str(content_type or "").split(";")[1:]:
+        key, _, value = part.strip().partition("=")
+        if key.strip().lower() == "charset":
+            charset = value.strip().strip('"') or None
+    for enc in ([charset] if charset else []) + ["utf-8"]:
+        try:
+            return raw.decode(enc)
+        except (LookupError, UnicodeDecodeError, AttributeError):
+            continue
+    return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+
+
+def _wire_header(status, reason, items) -> str:
+    """A response header in wire form. ZAP matches its patterns against this surface too."""
+    head = f"HTTP/1.1 {status}" + (f" {reason}" if reason else "")
+    return "\r\n".join([head] + [f"{k}: {v}" for k, v in items])
+
+
+class DirectReader:
+    """The unauthenticated side of the differential: a reader that bypasses ZAP.
+
+    It also bypasses everything else that could quietly put a session or a middlebox in the
+    way of the "unauthenticated" read:
+
+      * PROXY ENVIRONMENT VARIABLES are ignored (`trust_env = False`). On a DAST workstation
+        `HTTP_PROXY` very often points AT ZAP — which would make this read authenticated and
+        turn a working setup into a permanent verification failure — and a corporate proxy's
+        block page would otherwise be accepted as "the application's anonymous response".
+      * `~/.netrc` is ignored for the same reason: it would send credentials.
+      * It carries its OWN cookie jar across redirect hops, the way ZAP does on its side, so
+        a session app that bootstraps an anonymous session on the first hop is followed the
+        same way instead of ping-ponging until the hop limit.
+      * It sends ZAP's User-Agent, so a WAF or CDN cannot answer the two sides differently on
+        that alone (a 403 bot-block page reads as a perfectly good "anonymous response").
+
+    One instance per `test-authentication` call; the jar must not outlive it.
+    """
+
+    # What ZAP's accessUrl sends (measured), so both sides look identical to a filter.
+    USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+
+    def __init__(self, timeout=30):
+        self.timeout = timeout
+        self._session = None
+        self._opener = None
+        try:
+            import requests  # type: ignore
+            self._session = requests.Session()
+            self._session.trust_env = False          # no proxy env, no netrc, no env CA
+        except ImportError:
+            import http.cookiejar
+            import ssl
+            import urllib.request
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **kw):
+                    return None
+
+            self._opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),                      # ignore proxy env
+                urllib.request.HTTPSHandler(context=ctx),
+                urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+                _NoRedirect)
+
+    def fetch(self, url) -> "Response":
+        ok, status, header, body = self._get(url)
+        return Response(ok=bool(ok) and status is not None, status=status, header=header,
+                        body=body, url=url,
+                        via="direct request (bypasses ZAP; no proxy env, no netrc)")
+
+    def _get(self, url):
+        if self._session is not None:
+            try:
+                r = self._session.get(url, timeout=self.timeout, verify=False,
+                                      allow_redirects=False,
+                                      headers={"User-Agent": self.USER_AGENT})
+                return (True, r.status_code,
+                        _wire_header(r.status_code, r.reason, r.headers.items()),
+                        decode_body(r.content, r.headers.get("Content-Type")))
+            except Exception:  # noqa: BLE001
+                return False, None, "", ""
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+        try:
+            with self._opener.open(req, timeout=self.timeout) as r:
+                return (True, r.status, _wire_header(r.status, r.reason, r.headers.items()),
+                        decode_body(r.read(), r.headers.get("Content-Type")))
+        except urllib.error.HTTPError as exc:
+            # urllib raises on 4xx/5xx and on an unfollowed redirect. Those ARE responses.
+            return (True, exc.code, _wire_header(exc.code, exc.reason, exc.headers.items()),
+                    decode_body(exc.read(), exc.headers.get("Content-Type")))
+        except Exception:  # noqa: BLE001
+            return False, None, "", ""
+
+
 def _http_get(url, timeout=30):
-    """Return (ok, status, text)."""
+    """Return (ok, status, text). Used for the ZAP API itself.
+
+    `ok` means A RESPONSE ARRIVED — ZAP answers its refusals with HTTP 400 and a JSON body
+    that says why, and that body is the answer. Proxy environment variables are ignored here
+    too: the ZAP API is a local control channel, not something to route through a proxy.
+    """
     try:
         import requests  # type: ignore
         try:
-            r = requests.get(url, timeout=timeout, verify=False)
-            return True, r.status_code, r.text
+            session = requests.Session()
+            session.trust_env = False
+            r = session.get(url, timeout=timeout, verify=False)
+            return True, r.status_code, decode_body(r.content, r.headers.get("Content-Type"))
         except Exception:  # noqa: BLE001
             return False, None, ""
     except ImportError:
         import ssl
+        import urllib.error
         import urllib.request
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                             urllib.request.HTTPSHandler(context=ctx))
         try:
-            with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
-                return True, r.status, r.read().decode("utf-8", "replace")
+            with opener.open(url, timeout=timeout) as r:
+                return True, r.status, decode_body(r.read(), r.headers.get("Content-Type"))
+        except urllib.error.HTTPError as exc:
+            return True, exc.code, decode_body(exc.read(), exc.headers.get("Content-Type"))
         except Exception:  # noqa: BLE001
             return False, None, ""
 
@@ -165,7 +321,11 @@ def zap_call(cfg, fmt, component, kind, name, params=None):
     # ZAP also reports some failures as HTTP 200 + {"Result": "FAIL"} (e.g. removeUser with
     # an id that does not exist), so that must count as a failure too.
     result_fail = isinstance(data, dict) and str(data.get("Result", "")).upper() == "FAIL"
-    ok = (bool(reached) and not zap_error and not result_fail
+    # A JSON object is what "ZAP answered" looks like. Requiring it also closes a gap the
+    # urllib fallback opens: an unfollowable redirect (loop, non-http scheme) surfaces as a
+    # 3xx *response*, which would otherwise satisfy `status < 400` and report a call that
+    # never reached ZAP as ok.
+    ok = (bool(reached) and not zap_error and not result_fail and isinstance(data, dict)
           and (status is None or int(status) < 400))
     out = {"ok": ok, "status": status, "data": data}
     if zap_error:
@@ -217,32 +377,149 @@ def _contains(haystack: str, needle) -> bool:
     return str(needle).lower() in (haystack or "").lower()
 
 
-def evidence_from_responses(authed, unauth, logged_in_indicator=None,
+def indicator_matches(haystack: str, needle) -> bool:
+    """Match an indicator the way ZAP matches it: as a REGULAR EXPRESSION.
+
+    ZAP's parameters are named `loggedInIndicatorRegex` / `loggedOutIndicatorRegex`, and
+    measured behaviour agrees: `Signed ?in as` and `Signed in as|Logged in as` each give a
+    healthy single login against a page reading "Signed in as alice" — as literals neither
+    would match and ZAP would re-authenticate on every response. Judging the same string as
+    a literal substring here reported "indicator absent" for a configuration ZAP is happy
+    with, and under the stop-on-unverified rule that ends the run.
+
+    A pattern that does not compile falls back to a literal search rather than throwing away
+    the caller's intent.
+    """
+    if not needle:
+        return False
+    try:
+        return re.search(str(needle), haystack or "", re.IGNORECASE | re.DOTALL) is not None
+    except re.error:
+        return _contains(haystack, needle)
+
+
+def header_fields(header: str) -> str:
+    """The header block WITHOUT its status line.
+
+    The status line is excluded on purpose. It is part of what ZAP matches, but an indicator
+    that only matches "HTTP/1.1 200 OK" is a status-only pass — the first thing
+    references/authentication.md forbids — and `200`/`OK` are easy strings to reach for.
+    """
+    return "\n".join(str(header or "").splitlines()[1:])
+
+
+class Response(NamedTuple):
+    """One side of the differential read.
+
+    `ok=False` means no response arrived at all — kept distinct from an empty response
+    everywhere below, because "we could not look" and "we looked and it was absent" are
+    opposite pieces of evidence.
+    """
+    ok: bool = False
+    status: int = None
+    header: str = ""
+    body: str = ""
+    url: str = ""
+    chain: tuple = ()
+    via: str = ""
+    # Response headers of the redirect hops walked to get here. Kept for matching only —
+    # they are never returned, because they carry Set-Cookie and one-time URLs.
+    hop_headers: tuple = ()
+
+
+def _match_where(resp: Response, needle):
+    """Where `needle` appears: 'header' | 'body' | 'both' | 'redirect' | None.
+
+    Header AND body, because that is what ZAP does with the logged-in/out patterns —
+    measured: an indicator present only in the `X-Authenticated-User` response header is
+    enough for ZAP to call the response authenticated (one login over five requests, versus
+    six for a body-only indicator that never matches). Evidence judged on the body alone
+    contradicts the scanner it is supposed to be vouching for, and on a session app —
+    where the differences often live in Set-Cookie, Location or a user header — it rejects
+    configurations that work.
+
+    'redirect' means it matched in a hop we followed rather than in the response we landed
+    on. ZAP evaluates every response it sees, so a `Location`-based indicator is a match for
+    ZAP; without this, following redirects would have made exactly those indicators
+    invisible here.
+    """
+    if not needle or not resp.ok:
+        return None
+    in_header = indicator_matches(header_fields(resp.header), needle)
+    in_body = indicator_matches(resp.body, needle)
+    if in_header and in_body:
+        return "both"
+    if in_header:
+        return "header"
+    if in_body:
+        return "body"
+    if any(indicator_matches(header_fields(h), needle) for h in resp.hop_headers):
+        return "redirect"
+    return None
+
+
+def _chain_cut(resp: Response):
+    """The reason this side's redirect chain was cut short, or None if it ran to a page."""
+    for hop in resp.chain:
+        if isinstance(hop, dict) and hop.get("stopped"):
+            return hop["stopped"]
+    return None
+
+
+def evidence_from_responses(authed: Response, unauth: Response, logged_in_indicator=None,
                             identity_markers=None):
     """Build RAW verification evidence — deliberately NO verdict field.
 
-    `authed` / `unauth` are (status, body) tuples. The caller applies the differential
-    rule (indicator in authed AND not in unauth) plus identity confirmation; this function
-    only reports observations so the safety decision stays with the LLM + fixed rule.
+    The caller applies the differential rule (indicator in authed AND not in unauth) plus
+    identity confirmation; this function only reports observations so the safety decision
+    stays with the LLM + fixed rule.
+
+    Every comparison is None unless BOTH sides were actually read. A comparison against a
+    response that never arrived is not evidence, and `None` is the only value the caller
+    cannot mistake for one.
     """
-    a_status, a_body = authed
-    u_status, u_body = unauth
     identity_markers = identity_markers or []
+    both = bool(authed.ok and unauth.ok)
+    where_a = _match_where(authed, logged_in_indicator)
+    where_u = _match_where(unauth, logged_in_indicator)
+    in_a = None if not authed.ok or not logged_in_indicator else where_a is not None
+    in_u = None if not unauth.ok or not logged_in_indicator else where_u is not None
     return {
-        "status_authed": a_status,
-        "status_unauth": u_status,
-        "indicator_in_authed": _contains(a_body, logged_in_indicator),
-        "indicator_in_unauth": _contains(u_body, logged_in_indicator),
+        "authed_read_ok": authed.ok,
+        "unauth_read_ok": unauth.ok,
+        "evidence_complete": both,
+        "status_authed": authed.status,
+        "status_unauth": unauth.status,
+        "authed_read_url": safe_url(authed.url),
+        "unauth_read_url": safe_url(unauth.url),
+        "authed_redirect_chain": list(authed.chain),
+        "unauth_redirect_chain": list(unauth.chain),
+        # A cut chain means the read stopped on a bodiless 3xx instead of reaching a page.
+        # The differential then degenerates into "the other side was a real page", which
+        # almost any indicator satisfies — so it is a top-level fact, not a detail buried
+        # in the chain.
+        "authed_chain_cut": _chain_cut(authed),
+        "unauth_chain_cut": _chain_cut(unauth),
+        "indicator_in_authed": in_a,
+        "indicator_in_unauth": in_u,
+        "indicator_where_authed": where_a,
+        "indicator_where_unauth": where_u,
         # Differential precondition; the verdict is still the caller's.
         "indicator_is_differential": (
-            _contains(a_body, logged_in_indicator)
-            and not _contains(u_body, logged_in_indicator)
-        ) if logged_in_indicator else None,
+            (in_a is True) and (in_u is False)
+        ) if (both and logged_in_indicator) else None,
         "identity_markers_in_authed": {
-            str(m): _contains(a_body, m) for m in identity_markers
+            str(m): (_match_where(authed, m) is not None) if authed.ok else None
+            for m in identity_markers
         },
-        "status_differs": a_status != u_status,
-        "note": "evidence only — apply the differential + identity rule to decide auth",
+        "identity_markers_in_unauth": {
+            str(m): (_match_where(unauth, m) is not None) if unauth.ok else None
+            for m in identity_markers
+        },
+        "status_differs": (authed.status != unauth.status) if both else None,
+        "matched_on": "response header + body (the same surface ZAP matches its patterns on)",
+        "note": "evidence only — apply the differential + identity rule to decide auth; "
+                "null means NOT OBSERVED, never 'absent'",
     }
 
 
@@ -740,33 +1017,293 @@ def status_from_response_header(header: str):
 
 
 def _message_count(cfg):
+    """How many messages ZAP's history holds, or None if it would not say.
+
+    None, not 0: a failed read used to become a 0, which turned the history fallback below
+    into a search of the WHOLE history — where an authenticated response to the same URL
+    from earlier in the run (ZAP's own poll of `pollUrl` is the obvious one) would be
+    accepted as the response to a request that may have gone out anonymous.
+    """
     res = zap_call(cfg, "JSON", "core", "view", "numberOfMessages")
+    if not res.get("ok"):
+        return None
     try:
-        return int(_get(res, "data", "numberOfMessages") or 0)
+        return int(_get(res, "data", "numberOfMessages"))
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
-def _fetch_through_zap(cfg, url):
-    """Access `url` THROUGH ZAP so the forced user (if enabled) applies, then read the
-    response back out of ZAP's history. Returns (status, body, ok)."""
-    before = _message_count(cfg)
+def _last_message_id(cfg):
+    """The newest history id before we send anything, or None if it cannot be established.
+
+    Measured on ZAP 2.17.0: `core/view/messages` selects by ID, not by offset —
+    `start=numberOfMessages` returns the LAST PRE-EXISTING message (and `start=N+1` returns
+    nothing until we send something). Dating entries by id is what makes "recorded after our
+    call" true rather than approximately true; asking for one past the count is what makes
+    the window start at our own request.
+    """
+    count = _message_count(cfg)
+    if not count:
+        return 0 if count == 0 else None
+    res = zap_call(cfg, "JSON", "core", "view", "messages",
+                   {"start": str(count), "count": "1"})
+    entries = _get(res, "data", "messages") or []
+    try:
+        return int(entries[-1]["id"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
+def request_line_url(request_header: str):
+    """The absolute URL out of a ZAP history request line ('GET http://h/p HTTP/1.1')."""
+    first = str(request_header or "").splitlines()[:1]
+    parts = first[0].split() if first else []
+    return parts[1] if len(parts) >= 2 else None
+
+
+def same_url(a, b) -> bool:
+    """URL equality for history matching. Deliberately strict.
+
+    The old matcher asked whether the target's path appeared ANYWHERE in the request line,
+    after deriving that path with `url.split('://')[1].split('/', 1)[-1]` — which for the
+    default verification URL (`/`, and for any bare origin) is the EMPTY STRING, and an
+    empty string is in every request line there is. ZAP's history around one accessUrl call
+    is not just our request: measured, it interleaves ZAP's own `GET /login`, `POST /login`,
+    poll requests, and site-tree placeholder entries with no response at all. Whichever of
+    those happened to be newest was returned as "the authenticated response" — a login page
+    or a poll body standing in for the page we never looked at.
+    """
+    if not a or not b:
+        return False
+    return str(a).rstrip("/") == str(b).rstrip("/")
+
+
+def header_value(header: str, name: str):
+    """Value of a response header field, or None. Case-insensitive, first wins."""
+    for line in str(header or "").splitlines()[1:]:
+        key, sep, value = line.partition(":")
+        if sep and key.strip().lower() == str(name).lower():
+            return value.strip()
+    return None
+
+
+def _origin(url):
+    """(scheme, host, port) with the case and default port normalised away."""
+    parts = urlparse(str(url or ""))
+    scheme = (parts.scheme or "").lower()
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return scheme, (parts.hostname or "").lower(), port or DEFAULT_PORTS.get(scheme)
+
+
+def same_origin(a, b) -> bool:
+    return _origin(a) == _origin(b)
+
+
+def is_safe_upgrade(target, origin_url) -> bool:
+    """http -> https on the SAME host: the one cross-origin hop worth following.
+
+    Django's `SECURE_SSL_REDIRECT`, Rails' `force_ssl`, Spring's `requires-channel=https`
+    and the standard nginx `return 301 https://$host$request_uri` all answer a plain-http
+    `base_url` this way. Refusing it stops both sides on an empty 301 and blames
+    authentication for a scheme redirect.
+    """
+    scheme_t, host_t, _ = _origin(target)
+    scheme_o, host_o, _ = _origin(origin_url)
+    return scheme_o == "http" and scheme_t == "https" and host_t == host_o and bool(host_t)
+
+
+def _normalised_path(url) -> str:
+    """Path only, percent-decoded and case-folded — how a server routes it, not how it is
+    spelled. `/Logout` and `/log%6Fut` reach the same handler on IIS, Django, Rails and
+    Express; a guard that compares the spelling guards nothing."""
+    path = unquote(urlparse(str(url or "")).path or "")
+    return "/" + path.strip("/").casefold()
+
+
+def is_session_ending(url):
+    """The session-terminating path this redirect leads to, or None. Built in, deliberately.
+
+    `exclude.paths` is optional and nothing requires `/logout` to be in it, but following a
+    redirect into logout destroys the very session this command exists to verify — and does
+    it as the forced user, through ZAP, leaving every later step to fail for a reason that
+    is no longer visible. Segment-wise so `/accounts/logout/`, `/api/v1/logout` and Devise's
+    `/users/sign_out` are all covered, while `/logout-report` is not.
+    """
+    segments = [s for s in _normalised_path(url).split("/") if s]
+    for seg in segments:
+        if seg in LOGOUT_SEGMENTS:
+            return "/" + seg
+    if segments[-2:] == ["session", "destroy"]:
+        return "/session/destroy"
+    return None
+
+
+def path_is_excluded(url, exclude_paths):
+    """The `exclude.paths` entry covering `url`, or None. Conservative prefix match, the
+    same rule validate_config.py applies to the auth URLs — but percent-decoded and
+    case-folded, because here the input is an app-controlled `Location` header rather than a
+    human-written config value.
+
+    The verification URL is checked against the excludes at config time; a redirect TARGET
+    is a URL nobody chose.
+    """
+    path = _normalised_path(url)
+    for entry in exclude_paths or []:
+        if not str(entry).strip().strip("/"):
+            continue        # an empty entry would normalise to "/" and exclude everything
+        ent = _normalised_path(entry if str(entry).startswith("/") else "/" + str(entry))
+        if ent == "/" or path == ent or path.startswith(ent + "/"):
+            return str(entry)
+    return None
+
+
+def safe_url(url) -> str:
+    """A URL fit to appear in evidence: no query string, no fragment.
+
+    A redirect target is chosen by the application. On an OIDC/SAML flow its query carries
+    the authorization `code`, `state`, `nonce`, `code_challenge` or an `id_token`; on a
+    password-reset or magic-link flow it carries a single-use token. This command's output is
+    read by an LLM and copied into `authentication.md` and `run.log`, and `redact.py` does
+    not cover it — so the query never leaves this function.
+    """
+    parts = urlsplit(str(url or ""))
+    shown = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    return shown + ("?<query omitted>" if parts.query else "")
+
+
+def next_hop(resp: Response, origin_url, hops_taken, max_hops=MAX_REDIRECT_HOPS,
+             exclude_paths=()):
+    """(next_url, stop_reason) for a redirect. Exactly one of the two is None.
+
+    Applied to BOTH sides. The reads used to be asymmetric — ZAP was told
+    `followRedirects=false` while the unauthenticated read followed silently — so on a
+    session app the authenticated 301 to `/profile/` was compared against the *login page*
+    the other side had been redirected to. Measured on a working session: authed 301 with
+    an empty body, unauth 200 with the login page, indicator found on neither side, and a
+    correctly authenticated run refused.
+    """
+    if not resp.ok or not resp.status or not 300 <= resp.status < 400:
+        return None, None
+    location = header_value(resp.header, "location")
+    if not location:
+        return None, "3xx without a Location header"
+    target = urljoin(resp.url or origin_url, location)
+    if hops_taken >= max_hops:
+        return None, f"redirect limit reached ({max_hops} hops)"
+    if not (same_origin(target, origin_url) or is_safe_upgrade(target, origin_url)):
+        # The origin, not the URL: the target of an SSO bounce carries the whole authorize
+        # query with it (see safe_url).
+        scheme, host, port = _origin(target)
+        return None, f"redirect leaves the target origin ({scheme}://{host}:{port})"
+    ending = is_session_ending(target)
+    if ending:
+        return None, f"redirect target ends the session ({ending})"
+    excluded = path_is_excluded(target, exclude_paths)
+    if excluded:
+        return None, f"redirect target is covered by exclude.paths ({excluded})"
+    return target, None
+
+
+def follow_redirects(fetch_one, url, max_hops=MAX_REDIRECT_HOPS, exclude_paths=()):
+    """Walk a redirect chain with `fetch_one`, recording every hop.
+
+    One loop drives both sides, so the authenticated and unauthenticated reads cannot drift
+    apart again: same hop limit, same origin rule, same recorded chain.
+    """
+    chain, hop_headers = [], []
+    current = url
+    while True:
+        resp = fetch_one(current)
+        resp = resp._replace(url=resp.url or current, chain=tuple(chain),
+                             hop_headers=tuple(hop_headers))
+        target, stop = next_hop(resp, url, len(chain), max_hops, exclude_paths)
+        hop = {"url": safe_url(current), "status": resp.status,
+               "location": safe_url(header_value(resp.header, "location"))}
+        if stop:
+            hop["followed"] = False
+            hop["stopped"] = stop
+            return resp._replace(chain=tuple(chain + [hop]))
+        if not target:
+            return resp
+        hop["followed"] = True
+        chain, hop_headers = chain + [hop], hop_headers + [resp.header]
+        current = target
+
+
+def _fetch_through_zap(cfg, url) -> Response:
+    """Fetch `url` THROUGH ZAP once, so the forced user (if enabled) applies.
+
+    ZAP 2.17.0's `core/action/accessUrl` RETURNS the message it sent — request header,
+    response header, body and history id — so the response can be read straight off the
+    call that produced it instead of being searched for afterwards. Older daemons answer
+    with a bare "OK"; for those we fall back to the history, matching the request line URL
+    exactly and only accepting entries recorded after our call.
+    """
+    last_id = _last_message_id(cfg)
     res = zap_call(cfg, "JSON", "core", "action", "accessUrl",
                    {"url": url, "followRedirects": "false"})
     if not res.get("ok"):
-        return None, "", False
-    msgs = zap_call(cfg, "JSON", "core", "view", "messages",
-                    {"start": str(before), "count": "20"})
-    entries = _get(msgs, "data", "messages") or []
-    # The request we just made is the newest entry mentioning this URL.
-    for entry in reversed(entries if isinstance(entries, list) else []):
-        if not isinstance(entry, dict):
+        return Response(ok=False, url=url, via="accessUrl refused by ZAP")
+    returned = _get(res, "data", "accessUrl")
+    entries = [e for e in (returned if isinstance(returned, list) else [])
+               if isinstance(e, dict) and "responseHeader" in e]
+    if entries:
+        # ZAP handed us the message it just sent. Its request line is the provenance of the
+        # response, so it is what the evidence reports as the URL that was read.
+        return _response_from(entries[-1], url,
+                              "zap accessUrl response (forced user applies)")
+    if last_id is None:
+        return Response(ok=False, url=url,
+                        via="accessUrl returned no message and ZAP's history could not be "
+                            "dated; refusing to guess which entry is ours")
+    for entry in reversed(_history_entries_after(cfg, last_id)):
+        if not same_url(request_line_url(entry.get("requestHeader", "")), url):
             continue
-        if url.split("://", 1)[-1].split("/", 1)[-1] in str(entry.get("requestHeader", "")) \
-                or url in str(entry.get("requestHeader", "")):
-            return (status_from_response_header(entry.get("responseHeader", "")),
-                    str(entry.get("responseBody", "")), True)
-    return None, "", True
+        out = _response_from(entry, url,
+                             "zap history lookup, exact URL match (forced user applies)")
+        if out.ok:
+            return out
+    return Response(ok=False, url=url,
+                    via="no response for this URL in ZAP's answer or history")
+
+
+def _response_from(entry, requested_url, via) -> Response:
+    """A Response from a ZAP history/accessUrl message, or ok=False for a placeholder.
+
+    ZAP records site-tree nodes as entries whose response is `HTTP/1.0 0` with no body.
+    They are not responses, and returning one as an empty authenticated read would fail
+    verification for a session that works.
+    """
+    status = status_from_response_header(entry.get("responseHeader", ""))
+    if not status:
+        return Response(ok=False, url=requested_url, via=via)
+    return Response(ok=True, status=status, header=str(entry.get("responseHeader", "")),
+                    body=str(entry.get("responseBody", "")),
+                    url=request_line_url(entry.get("requestHeader", "")) or requested_url,
+                    via=via)
+
+
+def _history_entries_after(cfg, last_id):
+    """History entries recorded after `last_id` — by id, not by window position.
+
+    The id filter is not redundant with the `start` we ask for: if a ZAP version treats
+    `start` as an offset (or the history has been pruned so ids and positions diverge), the
+    window silently begins one message early, and that message is the last one from BEFORE
+    our call — a response to the same URL that may have gone out under a different session.
+    """
+    msgs = zap_call(cfg, "JSON", "core", "view", "messages",
+                    {"start": str(int(last_id) + 1), "count": "50"})
+    out = []
+    for entry in _get(msgs, "data", "messages") or []:
+        try:
+            if isinstance(entry, dict) and int(entry.get("id")) > int(last_id):
+                out.append(entry)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def cmd_test_authentication(cfg, args):
@@ -776,23 +1313,47 @@ def cmd_test_authentication(cfg, args):
     ZAP holds are used); the unauthenticated read is a direct request that bypasses ZAP
     entirely. Comparing the two is what makes the caller's differential rule meaningful —
     two identical fetches would always look non-differential and fail verification.
+
+    Both sides are read the same way: same redirect rules, header and body both matched.
+    `evidence_complete` is false (exit code 1) when either side could not be read at all —
+    the differential rule cannot be applied to a response that does not exist, and reading
+    a failed fetch as "the indicator was absent there" is a false pass.
     """
+    if not str(args.logged_in_indicator or "").strip():
+        raise AuthUsageError(
+            "test-authentication requires --logged-in-indicator: the differential rule is "
+            "about an indicator, and evidence with none is not evidence — it exits 0 with "
+            "every comparison null, which reads like a pass.")
     base = _get(cfg, "target", "base_url", default="").rstrip("/")
     path = args.verification_url or "/"
     target = path if "://" in path else base + ("" if path.startswith("/") else "/") + path
 
-    st_a, body_a, access_ok = _fetch_through_zap(cfg, target)   # authenticated (via ZAP)
-    ok_u, st_u, body_u = _http_get(target)                      # unauthenticated (direct)
+    # The scope boundary applies to a URL passed on the command line too: `--verification-url`
+    # may carry a full URL, and everything below (the same-origin rule for redirects) is
+    # anchored to it.
+    allowed = _get(cfg, "target", "allowed_hosts", default=[]) or []
+    host = (urlparse(target).hostname or "").lower()
+    if allowed and host and host not in [str(h).strip().lower() for h in allowed]:
+        raise AuthUsageError(
+            f"verification URL host {host!r} is not in target.allowed_hosts {allowed!r}")
+
+    excludes = _get(cfg, "exclude", "paths", default=[]) or []
+    excludes = excludes if isinstance(excludes, list) else []
+    unauth_reader = DirectReader()
+    authed = follow_redirects(lambda u: _fetch_through_zap(cfg, u), target,
+                              exclude_paths=excludes)
+    unauth = follow_redirects(unauth_reader.fetch, target, exclude_paths=excludes)
 
     evidence = evidence_from_responses(
-        (st_a, body_a),
-        (st_u if ok_u else None, body_u),
+        authed, unauth,
         logged_in_indicator=args.logged_in_indicator,
-        identity_markers=(args.identity_markers or "").split(",") if args.identity_markers else [],
+        identity_markers=[m.strip() for m in (args.identity_markers or "").split(",")
+                          if m.strip()],
     )
-    evidence["access_ok"] = bool(access_ok)
-    evidence["authed_read_via"] = "zap-history (forced user applies)"
-    evidence["unauth_read_via"] = "direct request (bypasses ZAP)"
+    evidence["verification_url"] = safe_url(target)
+    evidence["authed_read_via"] = authed.via
+    evidence["unauth_read_via"] = unauth.via
+    evidence["redirects_followed"] = f"both sides, same-origin, up to {MAX_REDIRECT_HOPS} hops"
     return evidence
 
 
@@ -1134,11 +1695,14 @@ def main(argv=None) -> int:
             print(f"{k}: {v}")
     # Exit non-zero whenever the command could not deliver what it promises, so a caller that
     # only checks the exit status cannot mistake it for success:
-    #   applied  — ZAP does not hold the configuration we asked for
-    #   ok       — the ZAP call itself was rejected, or the canary found a problem
-    #   complete — teardown left credential-bearing state behind
-    if isinstance(result, dict) and any(result.get(k) is False
-                                        for k in ("applied", "ok", "complete")):
+    #   applied           — ZAP does not hold the configuration we asked for
+    #   ok                — the ZAP call itself was rejected, or the canary found a problem
+    #   complete          — teardown left credential-bearing state behind
+    #   evidence_complete — one side of the differential read never happened, so there is
+    #                       nothing to apply the rule to (NOT a failed authentication)
+    if isinstance(result, dict) and any(
+            result.get(k) is False
+            for k in ("applied", "ok", "complete", "evidence_complete")):
         return 1
     return 0
 

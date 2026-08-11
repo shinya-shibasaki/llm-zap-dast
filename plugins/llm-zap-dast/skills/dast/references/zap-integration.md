@@ -103,7 +103,8 @@ Playwright の Chromium とは別物で、相互に代替できない（README�
 認証の Context/方式/セッション/検証/User 設定、User指定スキャン、teardown は
 `scripts/zap_auth.py` の各コマンドで行う。**LLMが設定値を判断し、スクリプトは反映するだけ。**
 `configure-authentication` は `method: auto` を拒否（LLMが具体方式へ解決してから渡す）、
-`test-authentication` は合否ではなく**生の証拠**を返す、`active-scan-as-user` は `--gate-passed`
+`test-authentication` は合否ではなく**生の証拠**を返す（両側を同条件で読み、揃わなければ
+`evidence_complete: false`＋終了コード1）、`active-scan-as-user` は `--gate-passed`
 を要求する。詳細は `references/authentication.md`。
 
 ## ZAP動作モード
