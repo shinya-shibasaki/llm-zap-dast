@@ -63,6 +63,31 @@
    （実測：POLL_URL＋指標が EACH_RESP＋指標なしに戻る）、認証方式を後から設定し直すと
    検証設定が黙って消える。やり直す場合は `configure-verification` も必ず再実行する。
 
+### 資格情報の環境変数の読み込み（Claude が自分で行う。ユーザーに `source .env` を頼まない）
+
+`set-credentials` は資格情報を**環境変数名**から読む（`--username-env`／`--password-env`）。したがって
+その環境変数は、スクリプトを起動する**その Bash プロセス**に存在している必要がある。
+
+- **ユーザーに「実行前に `source .env` してください」と依頼しない。** Claude の各コマンドは独立した
+  シェルで動き（**Bash 呼び出し間で環境変数は保持されない**）、ユーザーが自分のシェルで source しても
+  Claude のサブプロセスには伝わらない。**Claude が、資格情報を使うコマンドと同じ 1 回の Bash 呼び出しの
+  中で自分で読み込む。**
+- 標準の読み込み方（値を一切出力しない）——資格情報を使うコマンドの前に同一行で置く：
+  ```
+  set -a; [ -f ./.env ] && . ./.env; set +a; \
+  python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_auth.py set-credentials --config <path> \
+    --username-env DAST_USERNAME --password-env DAST_PASSWORD --context <ctx> --user-id <id>
+  ```
+  `set -a` で `.env` の代入を export し、同じ呼び出しで起動する python がそれを継承する
+  （`.`＝source は値を印字しない）。**環境変数が保持されないため、資格情報を使う各コマンド**
+  （アカウントごとの `set-credentials`、工程0 の環境チェック等）**にこの前置きを毎回付ける**。
+- **値を絶対に出さない**：`.env` を Read／`cat`／`echo` しない、`echo $DAST_PASSWORD` をしない、
+  資格情報の**値**をコマンドラインに直接書かない（必ず `--*-env` で名前を渡し、スクリプトに環境から
+  読ませる）。この読み込み方は redaction 方針（値を stdout・成果物・スクショに出さない）と両立する。
+- **ユーザーに尋ねるのは次のときだけ**：`./.env` が無く、かつ指定の環境変数が（既に export された形でも）
+  見つからないとき——このとき初めて資格情報の入手方法を尋ねる。`.env` が `.gitignore` 対象でない場合は、
+  読み込みは行いつつ redaction 警告を出す（SKILL 工程0）。既定のファイルは `./.env`。
+
 ### 検証設定（Verification）の決め方
 
 **方式は POLL_URL を第一候補にする。** 認証専用エンドポイント（未ログインでは返らない

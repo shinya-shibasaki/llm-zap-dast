@@ -109,7 +109,9 @@ degrade しない。認証有効中に **ZAPが到達不能になった場合も
    - 認証有効時は追加で確認：認証情報用の環境変数が設定されているか／設定に平文の資格情報が
      書かれていないこと（`validate_config.py` が拒否）／`authentication.active_scan` の値／
      `login_url`・`verification_url` が `exclude.paths` に飲まれていないこと。**認証情報の値は
-     出力しない。**
+     出力しない。** 環境変数が Claude のシェルに無く `./.env` にある場合は、**Claude が同一 Bash
+     呼び出しで `set -a; [ -f ./.env ] && . ./.env; set +a` して確認する**（ユーザーに `source .env`
+     を頼まない。値は出さない。`references/authentication.md`「資格情報の環境変数の読み込み」）。
    - **認証の前提をここで判定して早期に停止する。** `authentication.enabled: true` で
      認証付きの診断が成立しないと分かっているなら（主方式 Browser Based Authentication に
      必要な `browser_firefox` が無い、ZAP不達で認証設定自体ができない等）、工程2.5 まで
@@ -164,6 +166,10 @@ degrade しない。認証有効中に **ZAPが到達不能になった場合も
 - Context/**スコープ登録**/認証方式/Session Management/Verification/User を設定し、資格情報を
   env 変数名から読む（`set-credentials`：**値は印字・保存しない**）。**認証方式 → Verification の
   順を守る**（逆順・やり直しは検証設定を消す）。
+- **資格情報の環境変数は Claude が自分で読み込む。ユーザーに `source .env` を頼まない。** Bash 呼び出し
+  間で環境変数は保持されないので、`.env` があれば `set-credentials` と**同じ 1 回の Bash 呼び出し**で
+  `set -a; [ -f ./.env ] && . ./.env; set +a; python3 …set-credentials …` と前置きする（値は出さない）。
+  詳細は `references/authentication.md`「資格情報の環境変数の読み込み」。
 - **スコープ登録（`include-in-context`）を省略しない。** ZAP は Context 内のURLにしか認証を
   適用しないため、省くと**エラーも出ずに未認証でスキャンが進む**（実測：ログイン試行0回・401）。
   ここで作った Context は**工程3でもそのまま使う**（作り直さない）。
