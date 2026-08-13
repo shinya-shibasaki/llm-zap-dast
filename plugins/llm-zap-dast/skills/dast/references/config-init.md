@@ -29,7 +29,7 @@
      認可診断には複数アカウントが要る旨をメモし、`authentication.users`（同一ロール2＝水平／
      異ロール＝垂直／3＝両方）の**コメント例を添える**（環境変数名のみ。既定は単一のままでよい）。
    - `scan`：`spider: true`、`playwright: true`、**`active_scan: true`**（既定ON。検出内容に
-     かかわらず true。実行時は工程5のゲート＋明示確認が必須で、無確認では走らない）、`scenario_tests: true`、
+     かかわらず true。実行時は工程5のゲート条件を満たせば無確認で実行）、`scenario_tests: true`、
      **`destructive: true`**（既定ON。使い捨てローカル対象前提。非ローカル＋`allow_production:false`
      では検証で拒否される。外部副作用は常に禁止）、**`availability_impact: false`**（DoS相当は既定OFF）。
      - `ajax_spider`：**SPA / JS描画依存かどうかを判定して提案する**（下記ヒューリスティック）。

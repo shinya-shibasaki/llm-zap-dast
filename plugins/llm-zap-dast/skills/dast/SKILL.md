@@ -90,7 +90,7 @@ degrade しない。認証有効中に **ZAPが到達不能になった場合も
 
 手順の詳細は `references/config-init.md` に従うこと。生成物でも安全既定
 （`allow_production: false` / `allowed_hosts` はローカル）を維持する（`active_scan` は既定ON。
-実行時は工程5のゲート＋明示確認が必須）。
+実行時は工程5のゲート条件を満たせば無確認で実行）。
 
 ---
 
@@ -265,14 +265,15 @@ Spider は未実施に落ちる（`references/authentication.md`）。
   `scan.active_scan` が true（既定ON。`false` で明示的に無効化されていない）／危険なURLが除外されている／
   本番でない、または明確な許可（`safety.allow_production`）がある。
 
-実行前に、次を表示し**利用者の明示的な確認を取る**：対象URL/ホスト、除外URL、使用するZAP
-ポリシー、想定される影響。
+実行前に、次を**提示・記録**する（対話確認は取らない — ゲート条件充足が実行許可）：対象URL/ホスト、
+除外URL、使用するZAPポリシー、想定される影響。
 
 曖昧な点があれば → Passive Scanまでで停止（Active Scanしない）。判断を記録する。
 
 **認証付き Active Scan（`authentication.enabled` かつ認証成功時）**：
 - **二重ゲート**。`scan.active_scan` **かつ** `authentication.active_scan` が true、**かつ**工程5の
-  明示確認を通ったときだけ実行（`zap_auth.py active-scan-as-user` は `--gate-passed` を要求する）。
+  ゲート条件を満たしたときだけ実行（`zap_auth.py active-scan-as-user` は `--gate-passed` を要求する。
+  `--gate-passed` は「ゲート条件を満たした」ことを表し、対話確認は不要）。
 - **認証済みか＝明示パラメータ**。認証付きは User を明示指定。**未ゲート／未認証のつもりの Active
   Scan を呼ぶ前に `set-forced-user off`** する（forced-user は Context 単位のため、放置すると
   未認証スキャンがログイン済みユーザーとして走り結果が濁る）。
@@ -349,8 +350,10 @@ ZAPアラート＋シナリオ結果を分析。次を分ける：
 テストアプリ前提。内容に問題が無ければ工程ごとに手を止めない）。工程ごとの成果物は
 `reports/dast/<run-id>/` 配下に個別ファイルとして残し、人間が工程単位で後から読み返せるようにする。
 
-**唯一の例外は Active Scan（工程5）**：本質的に破壊的で安全ゲートがあるため、実行前の明示確認は
-従来どおり必須（`references/safety-policy.md` ルール3）。それ以外の工程は無確認で進む。
+**全工程を無確認で進む（Active Scan＝工程5 を含む）。** Active Scan は破壊的なので、実行前に対象/除外/
+ZAPポリシー/想定影響を**提示・記録**するが、**対話確認は取らない** — ゲート条件（`allowed_hosts`・
+`scan.active_scan: true`・危険URL除外・非本番または許可）を満たすこと自体が実行の許可となる
+（使い捨てローカルのテストアプリ前提）。ゲート条件が未充足・曖昧なら Passive までで停止する（下記の安全判定）。
 
 **安全上の停止条件は「確認」とは別**：許可外ホスト、本番なのに許可なし、設定不整合、認証有効での
 認証失敗・ZAP不達・再認証ストーム・`max_attempts` 枯渇などに該当したら、確認の有無に関わらず従来

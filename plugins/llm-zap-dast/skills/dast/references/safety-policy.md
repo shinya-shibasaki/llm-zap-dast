@@ -16,8 +16,10 @@
    担保し、設定検証は入口側の一次チェックとする。
 2. **スコープを自動拡大しない。** 外部リンクをたどって対象化しない、発見したホストを追加しない。
    ZAP Context の `include` は `allowed_hosts` に限定し、スコープ外はスキャンしない。
-3. **Active Scan は既定でON、ただしゲート制御。** 既定値が true でも、工程5のゲートを満たし、
-   **かつ**利用者が明示的に確認した場合のみ実行する。無確認では走らせない。`active_scan: false`
+3. **Active Scan は既定でON、ただしゲート制御。** 工程5のゲート条件（下記チェックリスト）を
+   **すべて満たした場合のみ**実行する。対象は使い捨てローカルのテストアプリ前提のため、**ゲート条件の
+   充足自体が実行の許可**であり、対話による明示確認は取らない（実行前に対象/除外/ポリシー/想定影響を
+   提示・記録する）。ゲート条件が未充足・曖昧なら Passive までで停止する。`active_scan: false`
    を明示すれば無効化できる。このゲートは**ZAPのモードとは独立**。
    **注意：Active Scan（と工程3 Spider/Ajax）は本質的に破壊的で、その破壊性は `scan.active_scan`
    ゲート＋ZAPポリシーで制御する。`scan.destructive` とは独立**であり、`scan.destructive: false` に
@@ -73,20 +75,20 @@ fail-soft は「機能が欠けている」への答えです。「安全を担�
 
 ## 工程5 Active Scan ゲート（チェックリスト）
 
-**すべて**真の場合のみ Active Scan を実行し、その後で利用者に確認する：
+**すべて**真の場合のみ Active Scan を実行する（対話確認は取らない。条件充足＝実行許可）：
 
 - [ ] 対象環境が許可されている
 - [ ] 対象ホストが `allowed_hosts` に含まれる
 - [ ] `scan.active_scan` が true（既定ON。`false` で明示的に無効化されていない）
 - [ ] 危険なURLが `exclude.paths` に入っている
 - [ ] 本番でない、または `safety.allow_production: true` かつ明示的な許可がある
-- [ ] 対象URL/ホスト、除外URL、ZAPポリシー、想定される影響を提示した上で利用者が確認した
+- [ ] 対象URL/ホスト、除外URL、ZAPポリシー、想定される影響を**提示・記録した**（承認待ちはしない）
 
-曖昧な点があれば ⇒ Passive Scanまでで停止。
+曖昧な点・条件未充足があれば ⇒ Passive Scanまでで停止。
 
 **認証付き Active Scan**（`authentication.enabled` かつ認証成功時）は上記に加え、**二重ゲート**：
-`scan.active_scan` **かつ** `authentication.active_scan` が true、かつ工程5確認を通ること
-（`zap_auth.py active-scan-as-user` は `--gate-passed` を要求）。
+`scan.active_scan` **かつ** `authentication.active_scan` が true、かつ工程5ゲート条件を満たすこと
+（`zap_auth.py active-scan-as-user` の `--gate-passed` は「ゲート条件を満たした」ことを表す。対話確認は不要）。
 
 ## 認証（認証付きDAST時の固定ルール・`references/authentication.md`）
 
