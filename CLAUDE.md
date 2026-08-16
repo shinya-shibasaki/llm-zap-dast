@@ -36,7 +36,7 @@ OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレー
 - **安全の権威は `references/safety-policy.md`。** 破壊の3軸（8A 対象内部 / 8B 可用性 / 8C 外部副作用）
   と「停止 vs fail-soft スキップ」の線引きはここが正。**安全ゲートを緩める/迂回する改修はしない。**
 - **認証は「できなければ停止」。** `authentication.enabled: true` は認証付きで診断する約束。認証できない
-  と分かったら未認証へ degrade せず run を停止（`authentication.md`／memory `v2-auth-direction`）。
+  と分かったら未認証へ degrade せず run を停止（`references/authentication.md`・`safety-policy.md`）。
 - **秘匿情報を出力に出さない。** 資格情報は環境変数「名」からのみ読み値を印字しない、`clear-authentication`
   teardown 必須、`usersList` は平文パスワードを返すので必ずマスク（`redaction.md`／`safety-policy.md`）。
 
@@ -44,11 +44,12 @@ OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレー
 
 ZAP のセッション/認証/検証まわりは推測やバイトコード読解ではなく**実機で1回測ってから**
 references に書く。検証は形の違う対象を2つ以上で行う（トークン型だけだと層のバグが隠れる）。
-測り方と既知の罠は memory `zap-auth-measured-facts`、live テストは `tests/live/`。
+測り方（測定ハーネスと opt-in 手順）は `tests/live/README.md`、実機で確認済みの罠は
+`references/authentication.md`「実機で確認済みの落とし穴」と `references/zap-integration.md` に集約済み。
 
 ## 開発・リリース手順
 
-- **ブランチを切らず `main` に直接コミット**（分割はコミット単位で。memory `commit-on-main-directly`）。
+- **ブランチを切らず `main` に直接コミット**（分割はコミット単位で）。
 - テスト：オフラインは `python -m pytest tests/`。ZAP 挙動を触ったら `DAST_LIVE_ZAP` で opt-in の
   live テスト（`tests/live/`）。プラグイン構造を触ったら `claude plugin validate`。
 - **配布はコミットSHA単位でキャッシュ**される。配布先へ反映するには
