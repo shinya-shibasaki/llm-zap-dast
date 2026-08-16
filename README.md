@@ -166,9 +166,10 @@ claude plugin install llm-zap-dast@shibasaki-security-tools --scope local
 **手で書くのが大変な場合は生成を支援できます。** `/llm-zap-dast:dast --init` を実行すると、Claude が
 リポジトリを解析して `base_url`（検出したポート）、`source_roots`、破壊的エンドポイントの
 `exclude.paths` 候補などを埋めた `dast.yaml` の下書きを作り、検証したうえで**確認後に書き出します**
-（既存ファイルは無断上書きしません）。また `dast.yaml` が無い状態で普通に実行した場合も、生成を
-提案します。安全既定（`allow_production: false` / ローカル限定）は生成物でも維持されます
-（`active_scan` は既定ON。ただし実行時は工程5のゲート＋明示確認が必須です）。
+（既存ファイルは無断上書きしません）。あわせて `.gitignore` に `reports/` と `.env` が無ければ、同じ
+確認の中で追記します（run 側で止まらないようにするため）。また `dast.yaml` が無い状態で普通に
+実行した場合も、生成を提案します。安全既定（`allow_production: false` / ローカル限定）は生成物でも維持されます
+（`active_scan` は既定ON。実行時は工程5のゲート条件を満たせば無確認で実行します）。
 
 ```yaml
 target:
@@ -179,7 +180,7 @@ zap:
   api_url: http://localhost:8080
   api_key_env: ZAP_API_KEY        # 既定はキーなし。下記のルール参照
 authentication:
-  enabled: false                  # true で認証付きDAST（best-effort）
+  enabled: false                  # true で認証付きDAST（認証できなければ run 停止）
   method: auto                    # auto | browser | form | json | basic | script
   login_url: /login
   username_env: DAST_USERNAME     # 単一アカウント（従来どおり）
@@ -197,7 +198,7 @@ scan:
   spider: true
   ajax_spider: false
   playwright: true
-  active_scan: true               # 既定ON。実行時は工程5のゲート＋明示確認が必須
+  active_scan: true               # 既定ON。実行時は工程5のゲート条件を満たせば無確認で実行
   scenario_tests: true
   destructive: true               # 対象内部の破壊的検証（既定ON・使い捨てローカル前提）
   availability_impact: false      # DoS相当・可用性を損なう検証（別軸・既定OFF）
@@ -224,14 +225,16 @@ output:
   `api_key_env` で指定した環境変数を設定します。
 - **`exclude.paths` は全経路に適用**されます — Spider、Ajax Spider、Passive、Active、Playwright。
   `/logout` はGETで到達し得るため、除外が重要です。
-- **認証付きDAST（best-effort）。** `authentication.enabled: true` で、工程2.5がZAPの認証機能を
-  使ってログインし、**差分で「本当に認証できたか」を確認**してから認証後の探索/スキャン/シナリオ
-  診断に進みます。primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）、ZAPが扱えない
-  ログインは Playwright を fallback。**任意アプリでの認証成功は保証しません**（失敗は成功と扱わず
-  「未実施」と記録）。**認証情報は環境変数名のみ**を書き、値は成果物・ログに出しません。ZAP User に
+- **認証付きDAST。** `authentication.enabled: true` は「**認証付きで診断する**」という約束です。
+  工程2.5がZAPの認証機能を使ってログインし、**差分で「本当に認証できたか」を確認**してから認証後の
+  探索/スキャン/シナリオ診断に進みます。primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。
+  **認証付きで診断できないと分かった時点で run を停止します**（未認証へ degrade せず、Playwright
+  ログインへも退避しません）。未認証の結果が欲しいときは `authentication.enabled: false` を指定します
+  ＝設定が結果の種類を決めます。**任意アプリでの認証成功は保証しません**（MFA / SSO 等は対象外。下記
+  「対象外 / 制約」）。**認証情報は環境変数名のみ**を書き、値は成果物・ログに出しません。ZAP User に
   残る資格情報は run 後に削除します。**対象は原則、自分が所有する使い捨てのローカル脆弱アプリを想定
   しており、本番・現実の稼働アプリには向けません。** 認証付き Active Scan は `scan.active_scan` と
-  `authentication.active_scan` の**両方 true ＋ 工程5の明示確認**で実行します。
+  `authentication.active_scan` の**両方 true**で実行します（工程5のゲート条件を満たせば無確認）。
 - **複数アカウント（`authentication.users`）。** 認可系の診断範囲はアカウント構成で決まります。
   **同一ロール2**で水平IDOR・水平権限昇格・別人トークン、**異ロール（低権限＋管理者）**で垂直権限
   昇格の拒否確認、**3アカウント（同一ロール2＋管理者）**で両方が可能です。単一アカウントでは水平系は
@@ -285,9 +288,11 @@ python3 plugins/llm-zap-dast/scripts/zap_auth.py --config examples/dast.yaml det
 
 - 診断対象は `allowed_hosts` のホストのみ。スコープはプロンプトだけでなく、run単位の
   **ZAP Context** で担保します。
-- **Active Scan は既定ON**ですが、工程5のゲート（設定＋安全チェック）を満たし、**かつ**実行前に
-  利用者の明示的な確認を取れた場合のみ実行します。無確認では走りません。このゲートは**ZAPの
-  モードとは独立**です。
+- **Active Scan は既定ON**で、工程5のゲート（設定＋安全チェック：`allowed_hosts` 内／`active_scan:true`
+  ／危険URL除外／非本番または許可）を**すべて満たしたときに実行**します。対象は使い捨てローカルの
+  テストアプリ前提のため、**ゲート条件の充足自体が実行の許可**で、対話確認は取りません（実行前に
+  対象/除外/ポリシー/想定影響は提示・記録します）。**条件が未充足・曖昧なら Passive までで停止**します。
+  このゲートは**ZAPのモードとは独立**です。
 - ZAPは **Protectedモード**で動作。**ATTACKモードは禁止**で、設定検証で拒否します。
 - **本番は既定で拒否**（`safety.allow_production: false`）。
 - **キーなし＋非ローカルは拒否**。秘匿情報（Cookie/Authorization/トークン/JWT/PII）は既定で
@@ -319,7 +324,9 @@ reports/dast/<run-id>/
 ```
 
 書き出す前に、Skillは対象リポジトリの `.gitignore` が `reports/` と `.env` を無視しているか確認し、
-無ければ追記前に確認します — 同意なく `.gitignore` を編集することはありません。
+無ければ追記前に確認します — 同意なく `.gitignore` を編集することはありません。`--init` を通して
+いれば通常はこの時点で追記済みなので、run 側では止まりません（`--init` が `.gitignore` の整備まで
+行います）。
 
 ## WSL / ネットワークの注意
 
@@ -330,10 +337,11 @@ IP（WSLの既定ゲートウェイなど）を使うか、WSL内でZAPを起動
 
 ## 対象外 / 制約
 
-- **認証は best-effort。** 任意アプリでの認証成功は保証しません。MFA / SSO / OAuth / SAML /
-  CAPTCHA は自動化対象外。認可系（水平IDOR・水平/垂直権限昇格）の実施可否は**アカウント構成に依存**
-  します（`authentication.users`）。構成が足りないクラスは「未実施」として記録します（実装済みの
-  ように扱いません）。
+- **認証は「できなければ停止」。** 任意アプリでの認証成功は保証しません（MFA / SSO / OAuth / SAML /
+  CAPTCHA は自動化対象外）。**認証付きを指定した run が認証できないと分かったら、未認証で継続せず
+  停止します**（認証状態の分からない結果＝静かな偽陰性を避けるため）。認可系（水平IDOR・水平/垂直
+  権限昇格）の実施可否は**アカウント構成に依存**します（`authentication.users`）。構成が足りない
+  クラスは「未実施」として記録します（実装済みのように扱いません）。
 - **対象は使い捨てのローカル脆弱アプリを前提**。本番・現実の稼働アプリには向けません
   （ローカル限定レールで構造的に本番を拒否）。
 - GUI / Web管理画面 / 外部データベース。
