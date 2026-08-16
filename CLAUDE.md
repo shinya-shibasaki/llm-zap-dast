@@ -50,8 +50,10 @@ references に書く。検証は形の違う対象を2つ以上で行う（ト�
 ## 開発・リリース手順
 
 - **ブランチを切らず `main` に直接コミット**（分割はコミット単位で）。
-- テスト：オフラインは `python -m pytest tests/`。ZAP 挙動を触ったら `DAST_LIVE_ZAP` で opt-in の
-  live テスト（`tests/live/`）。プラグイン構造を触ったら `claude plugin validate`。
+- テスト：日常は**オフライン** `python -m pytest tests/`（ZAP不要・速い）。**ZAP統合/認証層
+  （`zap_auth.py` 等、ZAP の実挙動に影響する変更）を触ったときだけ** opt-in の live テストで実測する
+  （`DAST_LIVE_ZAP=… python -m pytest tests/live`）。理由・回し方・2標的の使い分けは `tests/live/README.md`。
+  ドキュメントや ZAP に触れない変更は live 不要。プラグイン構造を触ったら `claude plugin validate`。
 - **配布はコミットSHA単位でキャッシュ**される。配布先へ反映するには
   `/plugin marketplace update shibasaki-security-tools` でカタログ更新→再取得（更新漏れだと古い版のまま）。
 
