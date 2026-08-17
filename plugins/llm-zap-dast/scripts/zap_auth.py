@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin ZAP authentication wrapper for llm-zap-dast (v2, best-effort authenticated DAST).
+"""Thin ZAP authentication wrapper for llm-zap-dast (authenticated DAST; stops on failure).
 
 This script performs NO judgement. The LLM inspects the target (source / login page / DOM /
 HTTP history), decides the concrete authentication method and settings, and this script

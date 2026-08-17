@@ -195,7 +195,8 @@ degrade しない。認証有効中に **ZAPが到達不能になった場合も
 - 成果物 `reports/dast/<run-id>/authentication.md` に、方式・根拠・認証成否の証拠・未認証/認証後の
   カバレッジ差・制約を記録（機微はマスク）。チェックポイント。
 
-詳細な手順・差分ルール・Playwright fallback の退化・teardown は `references/authentication.md`。
+詳細な手順・差分ルール・「Playwright ログインへ退避しない（停止する）」・teardown は
+`references/authentication.md`。
 
 ---
 
@@ -222,8 +223,8 @@ ZAPが利用可能になったら：
 
 **認証が成功している場合（工程2.5）**：認証済み User として実行する（`zap_auth.py spider-as-user`
 ／`ajax-spider-as-user`）。**認証済みで実行した探索と未認証の探索を明示的に区別**して記録する
-（カバレッジ差は `authentication.md` に残す）。Playwright fallback のみで認証した場合は User 指定
-Spider は未実施に落ちる（`references/authentication.md`）。
+（カバレッジ差は `authentication.md` に残す）。ZAP User として認証付き Spider が実行できないなら、
+それは工程2.5 の停止条件であって未認証での続行ではない（`references/authentication.md`）。
 
 フロー制御・ポーリング・JSON処理は Python ＋ `requests` で行う（reference参照）。アラートを
 エクスポートしたら、保存前に redaction を通す（`zap-alerts.json` はマスク済みであること）。
