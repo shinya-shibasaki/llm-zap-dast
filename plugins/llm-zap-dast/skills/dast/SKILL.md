@@ -322,6 +322,9 @@ SSRF）は常に禁止**、**8B（DoS相当・重い time-based・大量負荷�
 数本での自己判断の切り上げを禁じる）。`scenarios.md` に「対象×クラス→判定」のカバレッジ行列を残し、
 **未実施を第一級で明示**する。該当しないクラスまで総当たりはしない（文脈適合を崩さない）。DoD は安全停止に
 劣後し、行列を埋めるために 8B／`scan.destructive` を有効化しない。詳細は `references/scenario-testing.md`。
+**「要人間」は例外**：手持ちの Playwright/ZAP/curl で安全に確認できる項目を要人間・部分へ格下げしない
+（自己検証は8Cでない。要人間は 8C要／8B要／8Aだが `destructive:false`／人間判断 のみ、能力欠如は
+「未実施（理由）」）。詳細は `references/scenario-testing.md`・`references/safety-policy.md`。
 
 各シナリオに記録：ID、対象機能、想定脆弱性、根拠／前提条件、組み立てたペイロード（機微はマスク）・
 試した反復／期待される安全な挙動と脆弱時の挙動／実行可否、実行結果、証拠、追加確認事項。
