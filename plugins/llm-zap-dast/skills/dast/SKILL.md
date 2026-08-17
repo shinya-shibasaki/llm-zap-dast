@@ -302,7 +302,10 @@ LLMがソース解析とZAP履歴から仮説を立て、対象固有のペイ�
 よい（削除・更新・権限昇格の実行など）。ただし **8C（外部メール・課金・外部登録・実在内部インフラ
 SSRF）は常に禁止**、**8B（DoS相当・重い time-based・大量負荷）は `scan.availability_impact`
 （既定OFF）でのみ許可**。`scan.destructive: false` のときは検出止まり（悪用・状態変更は
-要人間）。安全制約は送信してよい範囲と行ってはならない操作を定めるものであり、制約の内側であれば
+要人間）。**ただし 8A には下限がある**：アプリが意図した保存先への良性・一意マーカーの**新規追加**は
+8A ではなく `destructive: false` でも実行してよい（`references/safety-policy.md` ルール8A）。
+**8C は手法ではなく宛先で決まる**（OOB 自体は 8C でない。宛先の線引きと外部送信機能の事前判定は
+`references/scenario-testing.md`）。安全制約は送信してよい範囲と行ってはならない操作を定めるものであり、制約の内側であれば
 ペイロードを能動的に組み立てて送信する。**破壊的に確認した項目は「何を不可逆に変えたか」を記録**する
 （後続カバレッジへの影響のため）。詳細は `references/scenario-testing.md`。
 
@@ -323,9 +326,11 @@ SSRF）は常に禁止**、**8B（DoS相当・重い time-based・大量負荷�
 数本での自己判断の切り上げを禁じる）。`scenarios.md` に「対象×クラス→判定」のカバレッジ行列を残し、
 **未実施を第一級で明示**する。該当しないクラスまで総当たりはしない（文脈適合を崩さない）。DoD は安全停止に
 劣後し、行列を埋めるために 8B／`scan.destructive` を有効化しない。詳細は `references/scenario-testing.md`。
-**「要人間」は例外**：手持ちの Playwright/ZAP/curl で安全に確認できる項目を要人間・部分へ格下げしない
-（自己検証は8Cでない。要人間は 8C要／8B要／8Aだが `destructive:false`／人間判断 のみ、能力欠如は
-「未実施（理由）」）。詳細は `references/scenario-testing.md`・`references/safety-policy.md`。
+**「要人間」は例外**：判定は `references/scenario-testing.md` の決定木で一意に決める——①安全かつフラグの
+範囲で確認できるなら**実行**（手持ちの Playwright/ZAP/curl で確認できる項目を格下げしない。自己検証は
+8Cでない）／②越えられない安全境界（8C要・8B要・8Aだが `destructive:false`・人間判断）なら**要人間**／
+③それ以外で撃てない（能力欠如・運用上の回避・除外パス・時間切れ）なら**未実施（理由）**。
+詳細は `references/scenario-testing.md`・`references/safety-policy.md`。
 
 各シナリオに記録：ID、対象機能、想定脆弱性、根拠／前提条件、組み立てたペイロード（機微はマスク）・
 試した反復／期待される安全な挙動と脆弱時の挙動／実行可否、実行結果、証拠、追加確認事項。
