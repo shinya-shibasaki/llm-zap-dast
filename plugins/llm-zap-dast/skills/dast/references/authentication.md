@@ -30,6 +30,66 @@
 - **`scripts/zap_auth.py`**：LLMが決めた値を **ZAP API へ機械的に反映するだけ**（判断しない）。
   対象固有のログイン処理をハードコードしない。
 
+## コマンド早見表（引数・控える値・終了コード）
+
+`zap_auth.py` は**単一パーサ**なので、`--help` は全オプションを平たく並べるだけで「どのコマンドが
+どれを要求するか」を示さない。下表がその対応（**コマンド関数が実際に読む引数**）である。
+
+**`--context` は Context の「名前」、`--context-id` は「id」で、コマンドごとに異なる。**
+`configure-verification` だけが両方を要る（`setContextCheckingStrategy` は名前、指標は id を取る
+ZAP 側の都合。下記「実機で確認済みの落とし穴」）。
+
+| コマンド | Context | User | その他の必須 | 控える戻り値 | 終了コードのキー |
+|---|---|---|---|---|---|
+| `detect-capabilities` | — | — | — | 対応方式の一覧 | `ok` |
+| `create-context` | `--context`（名前） | — | — | **`data.contextId`** | `ok` |
+| `include-in-context` | `--context` | — | `--regex`（1本以上） | `include_regexs` | `applied` |
+| `configure-authentication` | `--context-id` | — | `--method`（`auto` 不可）／`--param` | — | `ok` |
+| `configure-session-management` | `--context-id` | — | `--method`（`auto` 不可）／`--param` | — | `ok` |
+| `configure-verification` | **`--context` と `--context-id` の両方** | — | `--strategy`／指標1つ以上／POLL_URL なら `--poll-*` 5つ | `readback` | `applied` |
+| `create-user` | `--context-id` | — | `--username`（**ZAP上の表示名**） | **`data.userId`** | `ok` |
+| `set-credentials` | `--context-id` | `--user-id` | `--username-env`／`--password-env`（＋必要なら `--cred-template`） | — | `ok` |
+| `set-user-enabled` | `--context-id` | `--user-id` | `--state on` | — | `ok` |
+| `set-forced-user` | `--context-id` | `--user-id`（`on` のとき） | `--state on\|off` | — | `ok` |
+| `test-authentication` | — | **取らない**（forced-user 経由） | `--logged-in-indicator`（＋`--verification-url`／`--identity-markers`） | 証拠一式 | `evidence_complete` |
+| `verify-canary` | `--context`（**省略不可**・下記） | — | `--canary-url` を**3本以上** | `problems` | `ok` |
+| `auth-state` | — | — | — | `stats.auth.*` カウンタ | **無し（常に0）** |
+| `auth-status` | `--context-id` | — | — | 方式／forced-user／User の有効状態 | **無し（常に0）** |
+| `spider-as-user` | `--context-id` | `--user-id` | （`--url` 省略時は `base_url`） | scanId | `ok` |
+| `ajax-spider-as-user` | `--context`（**名前**） | `--user-name`（**名前**） | （`--url`） | — | `ok` |
+| `active-scan-as-user` | `--context-id` | `--user-id` | `--gate-passed`（＋`--policy`） | scanId | `ok` |
+| `clear-authentication` | `--context` **と** `--context-id` | `--user-ids`（カンマ区切り）／`--user-id`（単一。併用可） | — | — | `complete` |
+
+- **終了コード**：0＝約束を果たした／1＝果たしていない（上表のキーが `false`）／2＝呼び出し側の誤り
+  （引数不備。ZAP を叩く前に落ちる）。**`auth-state` と `auth-status` はこのキーを持たない**ので、
+  終了コードで合否を判断せず**出力の中身を読む**こと。
+- **exit 0 は合格ではない。** 特に `test-authentication` の 0 は「証拠が揃った」だけで、合否は
+  下記の差分ルール（`indicator_is_differential` と身元）を LLM が判定する。
+- **`--username`（`create-user`）は ZAP 上の表示名**であって資格情報ではない。`dast-user-<label>`
+  のように付け、**実ログイン名を書かない**（コマンドラインと出力に残るため）。
+
+### run 中ずっと控えておく値
+
+teardown と後続工程で必要になるが、どれも一度しか返らない。取得した時点で `authentication.md`
+（成果物）に記録する：
+
+- **Context 名**（`dast-<run-id>` のように run で一意にする。工程3以降も同じ Context を使い回す
+  ため。`references/zap-integration.md`「スコープ制御」）
+- **contextId**（`create-context` の `data.contextId`）
+- **アカウントごとの userId**（`create-user` の戻り値。**グローバル連番**で、Context ごとに0始まり
+  ではない）
+- **include 正規表現**（工程3のスコープ制御と同じもの）
+
+### `dast.yaml` の認証設定はスクリプトへ自動では渡らない
+
+`zap_auth.py` が設定ファイルから読むのは **`zap.api_url` / `zap.api_key_env` /
+`target.base_url` / `target.allowed_hosts` / `exclude.paths` の5つだけ**である。
+
+`authentication.login_url`・`verification.*`（指標・`verification_url`）・
+`session_management.method`・`users[]`・`max_attempts` は**一切読まれない** — LLM が値を読み取り、
+対応するフラグへ**自分で写して渡す**。写し忘れた項目は既定値で走る（例：`--verification-url` を
+渡さなければ検証対象は `/` になる）。
+
 ## 手順
 
 1. **能力検出**：`zap_auth.py detect-capabilities` で、使用中ZAPが対応する認証／セッション方式を取得。
@@ -46,7 +106,15 @@
 3. **Context 作成** → **スコープ登録（`include-in-context`）** → **認証方式設定** →
    **Session Management 設定** → **Verification 設定** → **User 作成** →
    **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
-   → **User を有効化**（`set-user-enabled`）→ 必要なら **forced-user ON**。
+   → **User を有効化**（`set-user-enabled`）→ **forced-user ON**（`set-forced-user --state on`）。
+
+   **forced-user ON は省略できない。** 続く手順4（`test-authentication`）と手順5（`verify-canary`）
+   は、認証側を `core/action/accessUrl` で ZAP に通して読む。ZAP が資格情報を載せるのは
+   **forced-user モードが有効な間だけ**なので、OFF のままだと**認証側も未認証で読まれる**。
+   すると「未認証 vs 未認証」を比べることになり、`evidence_complete: true` のまま差分が出ず、
+   **設定は正しいのに「認証できない」と誤診して run を停止する**。実測ハーネスも
+   `setForcedUser` → `setForcedUserModeEnabled(true)` の後に確認を回している
+   （`tests/live/test_live_auth_cookie.py`）。
 
    **スコープ登録は省略できない。** ZAP は「Context に含まれる URL」にしか認証を適用しないため、
    include が空だと**認証設定はすべて無効**になる。実測（同一手順で include の有無だけを変えた比較）:
@@ -190,6 +258,7 @@ set-credentials → set-user-enabled** を繰り返す。`create-user` の戻り
 - **文字コード**：ZAP は charset 無しの `text/html` を **UTF-8** として復号する（`requests` の
   既定は ISO-8859-1）。両側で復号規則が違うと、**同一の匿名ページが「差分あり」に化ける**。
 4. **差分による認証確認（安全の急所。必須）** — `test-authentication` は**生の証拠のみ**を返す。
+   **前提：forced-user が ON であること**（手順3。OFF だと両側とも未認証で読まれる）。
    判定は **LLM ＋ 下記の固定差分ルール**が行う：
    - 認証済み User として **認証後にのみ到達できる URL/API** を取得し、**同じ対象への未認証**取得と
      比較する。
@@ -251,7 +320,8 @@ set-credentials → set-user-enabled** を繰り返す。`create-user` の戻り
      B の印が無い／B の応答には B の印が有る**ことを確認する。両アカウントが同じ身元を返すなら
      セッションが取り違わっており、IDOR 判定の土台が崩れるので認証済みとして扱わない。
 5. **カナリア（`verify-canary`）** — 差分確認を通ったら、スパイダーに入る前に ZAP 自身の判定
-   カウンタを確認する（下記「カナリア」）。異種のURLを3本以上渡す。
+   カウンタを確認する（下記「カナリア」）。**`--context <名前>` と、異種のURLを3本以上**渡す
+   （どちらも省くと検査が弱くなる。前提は手順4と同じく forced-user ON）。
 6. **確認できた場合だけ**認証後工程（3/5/6）へ進む。**曖昧・失敗・カナリア異常なら「認証済み」と
    して扱わず、run を停止する。**
 
@@ -271,10 +341,27 @@ set-credentials → set-user-enabled** を繰り返す。`create-user` の戻り
 
 `verify-canary` は少量の認証済みリクエストを流し、その前後のカウンタ差分を返す。
 
+**前提：forced-user が ON であること**（手順3）。カナリアも認証側を `accessUrl` で流すため、
+OFF だと匿名のトラフィックを数えることになる。
+
+**`--context <名前>` を必ず渡すこと。** スクリプトはこれで Context を読み、`checkingStrategy` を
+得る。省略すると strategy が不明になり、**下表の「検証が一度も走っていない」（POLL_URL 用）の
+判定だけが黙って無効化**される — 警告は出ず `ok: true` が返る。残るのはストーム検知だけになる。
+
 **異種のURLを3本以上渡すこと**（HTML画面／認証後のJSON API／認証と無関係なエラー）。実測では、
 同種のURLだけを流すと**壊れた設定と正常な設定が同一の数値**になる（JSONのみ：どちらも
 `logins=1, loggedout=0`。同じ壊れた設定をHTML画面に流すと `logins=11, loggedout=10`）。
 本数が足りなければスクリプトが実行を拒否する。
+
+**URLの選び方**（工程2の診断対象マップから選ぶ。工程3はまだ走っていないのでZAP履歴は使えない）：
+
+- **include 正規表現の内側**であること。Context 外のURLには forced user が適用されず匿名で飛ぶ
+  ため（上記 include の実測）、カウンタが動かず「検証が一度も走っていない」と**誤判定**する。
+- **`exclude.paths`・状態変更エンドポイント・ログアウト系を選ばない。** `verify-canary` は
+  `test-authentication` と違い、ログアウト判定も exclude 判定も**通さずそのまま送る** —
+  `/logout` を選ぶと**検証中のセッションが消える**。
+- 3種の例：認証後にのみ意味のあるHTML画面／認証後のJSON API（`/api/me` 等）／認証と無関係な
+  エラー（存在しないパスの404で足りる）。
 
 検知する状態（実測に基づく）:
 
@@ -322,9 +409,11 @@ forced-user は **Context 単位**の設定。放置すると「未認証のつ�
   **生の ZAP API 応答を直接ログ・成果物に貼らない**こと。
 - **ZAP User に保存された資格情報は redaction では消せない**（バイナリセッションに届かない）。
   対策は削除：**run 終了時と中断時に必ず `zap_auth.py clear-authentication`** を呼び、一時
-  User/Context を消す。**複数アカウント時は全 User を削除**する（`--user-ids <id1,id2,...>` で
-  まとめて指定。`--context` を渡せば removeContext が User ごと消す backstop になる）。**ZAP
-  セッションをリポジトリ配下に置かない。** 消せなければ成果物に警告。
+  User/Context を消す。**引数は `--context <名前> --context-id <id> --user-ids <id1,id2,...>` の
+  3つを揃えて渡す**（控えた値は上記「run 中ずっと控えておく値」）。**`--context-id` を落とすと
+  User の個別削除が実行されず**、出力に `remove_users` が現れないまま `complete` が真になり得る
+  （removeContext が backstop として効くだけになる）。**複数アカウント時は全 User を削除**する。
+  **ZAP セッションをリポジトリ配下に置かない。** 消せなければ成果物に警告。
 
 ## 成果物 `authentication.md`
 
