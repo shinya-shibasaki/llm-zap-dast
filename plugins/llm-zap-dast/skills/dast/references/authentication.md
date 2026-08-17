@@ -139,7 +139,7 @@ set-credentials → set-user-enabled** を繰り返す。`create-user` の戻り
 - **forced-user は Context 単位で1人だけ**。アカウントを跨ぐ検証（A→B）は forced-user を張り替えるか、
   **`--user-id` を明示**した `spider-as-user`／`active-scan-as-user` で行う。未認証スキャンの前は
   `set-forced-user off`（どのアカウントで走ったか取り違えないため）。
-- **後方互換**：`authentication.users` が無ければ、従来どおり単一 `username_env`/`password_env` を
+- `authentication.users` が無ければ、単一 `username_env`/`password_env` を
   1アカウントとして扱う。
 
 ### 実機（ZAP 2.17.0）で確認済みの落とし穴

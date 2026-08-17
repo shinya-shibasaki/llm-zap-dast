@@ -42,7 +42,7 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
   `zap_control.py shutdown`（ZAPの `/JSON/core/action/shutdown/`）で停止する。利用者が事前に
   起動していたZAPには触れない。
 - **WSLの注意**：ZAPがWindows側にある構成では、WSL内のスキルからは起動できない。この場合は
-  従来どおり手動起動が必要（`zap.autostart` を実質スキップし、案内にフォールバック）。
+  手動起動が必要（`zap.autostart` を実質スキップし、案内にフォールバック）。
 
 ### 主要APIエンドポイント（ZAP 2.14+；利用中のバージョンで確認すること）
 

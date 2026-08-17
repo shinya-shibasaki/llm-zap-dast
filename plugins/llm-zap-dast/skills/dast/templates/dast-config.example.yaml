@@ -43,7 +43,7 @@ authentication:
   method: auto           # auto | browser | form | json | basic | script
   login_url: /login
   # --- アカウント（単一 or 複数）---
-  # 単一アカウント：下記 username_env/password_env を使う（従来どおり）。
+  # 単一アカウント：下記 username_env/password_env を使う。
   username_env: DAST_USERNAME
   password_env: DAST_PASSWORD
   # 複数アカウント：認可系の診断範囲はアカウント構成で決まる。
@@ -82,7 +82,7 @@ scan:
   scenario_tests: true
   # 破壊的検証（対象アプリ内部の不可逆な状態変更＝削除・更新・実権限昇格など）。
   # このフラグが制御するのは LLM主導の工程4・6のみ。使い捨てローカル対象を前提に既定ON。
-  # 非ローカル対象＋allow_production:false では拒否される。false にすると工程4・6は従来どおり
+  # 非ローカル対象＋allow_production:false では拒否される。false にすると工程4・6は
   # 検出止まり（悪用・状態変更は要人間）。
   # 注意1：Active Scan（工程5）と Spider（工程3）は本質的に破壊的で、このフラグとは独立。
   #        active_scan を切らない限り destructive:false でも破壊しうる。

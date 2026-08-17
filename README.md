@@ -183,7 +183,7 @@ authentication:
   enabled: false                  # true で認証付きDAST（認証できなければ run 停止）
   method: auto                    # auto | browser | form | json | basic | script
   login_url: /login
-  username_env: DAST_USERNAME     # 単一アカウント（従来どおり）
+  username_env: DAST_USERNAME     # 単一アカウント
   password_env: DAST_PASSWORD
   # 複数アカウント（認可診断用）。同一ロール2=水平／異ロール=垂直／3=両方。値は環境変数名のみ。
   # users:
@@ -243,7 +243,7 @@ output:
 - **破壊的検証（`scan.destructive`、既定ON）。** 対象が使い捨てのローカル脆弱アプリなので、対象アプリ
   **内部**の不可逆な状態変更（削除・更新・実際の権限昇格など）まで踏み込んで確認します。非ローカル対象＋
   `allow_production: false` では設定検証が**拒否**します（本番は構造的に破壊できない）。`false` にすると
-  従来どおり検出止まり。**外部への副作用**（外部メール・課金・外部登録・実在内部インフラへの SSRF 等、
+  検出止まり。**外部への副作用**（外部メール・課金・外部登録・実在内部インフラへの SSRF 等、
   サンドボックスの外に出る操作）は破壊フラグに関係なく**常に禁止**です。**可用性を損なう検証**（DoS相当）は
   別軸の `scan.availability_impact`（既定OFF）でのみ有効化します。
 
