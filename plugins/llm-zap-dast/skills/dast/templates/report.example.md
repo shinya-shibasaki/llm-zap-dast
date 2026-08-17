@@ -58,8 +58,8 @@ _LLM支援型グレーボックスDAST（ソース解析＋OWASP ZAP＋ブラウ
 <人間の確認を要する項目>
 
 ## 14. 診断上の制約
-- グレーボックス・LLM支援；認証は best-effort（`authentication.enabled` 時）；キーなしZAPは
-  ローカル限定；Active Scanはゲート付き。
+- グレーボックス・LLM支援；認証は「できなければ停止」（`authentication.enabled` 時、任意アプリでの
+  認証成功は保証しない）；キーなしZAPはローカル限定；Active Scanはゲート付き。
 - **破壊的検証**：`scan.destructive`＝<有効 / 無効>。有効時は対象アプリ内部の不可逆な状態変更まで
   実施（使い捨てローカル対象前提）。外部への副作用（外部メール/課金/外部SSRF等）は実施していない。
 - **可用性への影響**：`scan.availability_impact`＝<有効 / 無効>。無効時はDoS相当の検証なし。

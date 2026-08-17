@@ -22,8 +22,8 @@
    - `zap.api_url`：既定 `http://localhost:8080`。`api_key_env: ZAP_API_KEY`、`autostart: true`。
    - `authentication`：ログイン処理を検出したら**器を埋める**（`method: auto`・`login_url`・
      `username_env`/`password_env`・`max_attempts: 3`・`verification`/`session_management` は
-     `auto`・`active_scan: true`）。ただし**生成物の既定は `enabled: false`**（認証付きDASTは
-     best-effort。利用者が明示的に `true` にして使う）。**平文の資格情報は書かず環境変数名のみ**。
+     `auto`・`active_scan: true`）。ただし**生成物の既定は `enabled: false`**（任意アプリでの
+     認証成功は保証しないため。利用者が明示的に `true` にして使う）。**平文の資格情報は書かず環境変数名のみ**。
      認証方式候補・ログイン成功/失敗指標の候補はメモとして提示し、`method: auto` のまま残してよい
      （実行時にLLMが解決する）。**ロール/権限の存在を検出したら**（管理者機能・ロール定義など）、
      認可診断には複数アカウントが要る旨をメモし、`authentication.users`（同一ロール2＝水平／

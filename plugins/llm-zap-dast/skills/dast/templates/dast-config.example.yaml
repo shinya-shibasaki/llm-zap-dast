@@ -31,7 +31,7 @@ zap:
   # 任意: バイナリの代わりに Docker イメージで起動。
   # docker: "ghcr.io/zaproxy/zaproxy:stable"
 
-# 認証付きDAST（best-effort）。enabled: true で工程2.5が認証を設定し、差分で「本当に
+# 認証付きDAST（認証できなければ run 停止）。enabled: true で工程2.5が認証を設定し、差分で「本当に
 # 認証できたか」を確認してから認証後の探索/スキャン/シナリオ診断へ進む。
 # primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。ZAP が扱えないログイン
 # フロー向けに Playwright ログインを fallback とする（fallback は自動再認証を持たない）。
