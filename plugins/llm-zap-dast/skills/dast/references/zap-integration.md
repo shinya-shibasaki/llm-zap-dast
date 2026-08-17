@@ -47,7 +47,9 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 ### 主要APIエンドポイント（ZAP 2.14+；利用中のバージョンで確認すること）
 
 - Context：`/JSON/context/action/newContext/`、`.../includeInContext/`、
-  `.../excludeFromContext/`、`.../setContextInScope/`
+  `.../excludeFromContext/`、`.../setContextInScope/`（**新規Contextは既定で in-scope なので通常は
+  呼ばない**。実測：`newContext` 直後の `inScope` は `true`。`false` にすると Protected下で
+  Spider/Active Scan が `mode_violation` になる）
 - モード：`/JSON/core/action/setMode/`（`safe` | `protect` | `standard` | `attack`）—
   `protect` を使う。`attack` は決して使わない。
 - Spider：`/JSON/spider/action/scan/`、`/JSON/spider/view/status/`、
@@ -55,7 +57,11 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 - Ajax Spider：`/JSON/ajaxSpider/action/scan/`、`/JSON/ajaxSpider/view/status/` —
   **Firefox が必要**（下記「ブラウザ前提」）
 - Passive：`/JSON/pscan/view/recordsToScan/`（0 ⇒ 完了）
-- Active：`/JSON/ascan/action/scan/`、`/JSON/ascan/view/status/` — **ゲート付き**、工程5のみ
+- Active：`/JSON/ascan/action/scan/`（**`contextId` を渡し `url` は省く**。上記
+  「Active Scan は Context を対象に起動する」）、`/JSON/ascan/view/status/` — **ゲート付き**、工程5のみ
+- 除外（スキャナ単位・**セッション単位でContextに紐づかない**）：
+  `/JSON/spider/action/excludeFromScan/`、`/JSON/ascan/action/excludeFromScan/`、
+  それぞれの `.../view/excludedFromScan/` と `.../action/clearExcludedFromScan/`（**後始末で必須**）
 - データ：`/JSON/core/view/urls/`、`/JSON/core/view/messages/`（HTTP履歴）、
   `/JSON/core/view/alerts/` または `/JSON/alert/view/alerts/`
 - Proxy：ブラウザのHTTP(S)プロキシを `http://<zap-host>:<zap-port>` に向ける。
@@ -113,18 +119,99 @@ Playwright の Chromium とは別物で、相互に代替できない（README�
   ファジング、強制ブラウズ、改変再送）が、**スコープ外URLに対しては行われない**。
 - **ATTACKモードは禁止** — スコープ内の新規ノードを発見と同時にActive Scanするため、Active Scan
   ゲートと衝突する。
-- モードは万能ではない：API経由操作への強制はZAPのバージョンにより差があり得る。したがって
-  **実際の境界は ZAP Context のスコープ＋コード上で「スコープ外URLを叩かない」で担保**し、
-  Protectedモードはその上の防御層と位置づける。v1の動作確認時に、ProtectedモードがAPI操作を
-  実際に制約するかを一度確認する。
+- モードは万能ではない：**実際の境界は ZAP Context のスコープ＋コード上で「スコープ外URLを叩かない」
+  で担保**し、Protectedモードはその上の防御層と位置づける。
+
+**Protectedモードが実際に何を縛るか（ZAP 2.17.0 で実測）**：
+
+| API | Protectedモードは縛るか |
+| --- | --- |
+| `spider/action/scan` ／ `scanAsUser` | **縛る**（スコープ外URL → `mode_violation`） |
+| `ascan/action/scan` ／ `scanAsUser` | **縛る**（スコープ外URL → `mode_violation`）。加えて**スコープ内でも**下記の起動形で拒否される |
+| `core/action/accessUrl` | **縛らない**。Protected でも `safe` でも、スコープ外の生存ホストへ実際に到達した（対象側のカウンタで確認） |
+
+`accessUrl` を使うのは `test-authentication` / `verify-canary` / 工程6のプローブなので、**この経路の
+境界はモードではなく呼び出し側（`allowed_hosts` チェックとプロンプト規律）にある**。上の「実際の境界は
+Context のスコープ＋コード」という位置づけは、この実測どおりである。
+
+### Active Scan は Context を対象に起動する（URL を渡さない）
+
+**Protectedモードでは、対象のルートURLを渡した再帰 Active Scan は拒否される**（実測）：
+
+```
+ascan/action/scan     url=http://host:port/   recurse 既定(true)  → mode_violation
+ascan/action/scanAsUser 同上                                     → mode_violation
+```
+
+理由：`recurse=true` のとき ZAP は**起動ノードをベアのサイトノード `http://host:port`**（スラッシュ
+無し）として評価し、下記の include 正規表現（ホスト直後の `/` を必須にする＝ホスト境界を固定している
+形）がそれに一致しないため。`zap.log` に
+`Scans are not allowed on nodes not in scope Protected mode http://host:port` が出る。
+
+**正しい起動の仕方は `url` を省き、`contextId` で Context を対象にすること。** run のスコープは
+Context（include ＋ exclude）そのものなので、指定が意図と一致する。
+
+```
+ascan/action/scan       contextId=<id>              # 未認証 Active Scan（工程5）
+ascan/action/scanAsUser contextId=<id> userId=<id>  # 認証付き（zap_auth.py active-scan-as-user）
+```
+
+実測で確認した性質：
+
+- **Context の exclude を守る**（除外したエンドポイントへの攻撃 0 回、隣のエンドポイントは 16 回）。
+- **Context 外のホストは撃たない**（そのホストが ZAP のサイトツリーに載っていても 0 回）。
+- **`contextId` も省くと ZAP が `missing_parameter` で拒否する** — 「全部を撃つ」形には落ちない。
+- 対象は **Context ∩ サイトツリー**。ZAPセッションを使い回すと**前の run が発見したURLも含む**
+  （`allowed_hosts` の内側で exclude も効くが、レポートの探索範囲とはズレるので記録する）。
+- `standard` モードでも同じ挙動（回帰なし）。
+
+**`recurse=false` は回避策ではない。** `mode_violation` は消えて起動するが、実測では**配下を1件も
+撃たない**（ルートページのみ。同一対象で products/boom への攻撃が `recurse=false` では 0 回、
+Context 指定では 16 回）。「Active Scan 実行済み」に見えて何も検査していない状態になる。
+部分スキャンをしたいときだけ、`url` に**実在するサブパス**を渡す（ベアオリジンは上記のとおり拒否）。
 
 ## スコープ制御（ZAP Context）
 
 - run単位でContextを作成し、`include` 正規表現を `allowed_hosts` に限定する；スコープ外を
   スキャンしないよう設定する。Spiderが別ホストへのリンクをたどっても対象化しない。
-- `exclude.paths` を **Spider / Ajax Spider / Passive / Active / Playwright** のすべてに効かせる。
+- `exclude.paths` を**リクエストを送る経路すべて**に効かせる（下記「exclude の効かせ方」）。
   `/logout` はGETで到達し得るため、Spiderからの除外も必須。
 - `validate_config.py` は入口側の一次防御として残し、Contextは実行時の実境界とする（多層防御）。
+
+### exclude の効かせ方（経路別・ZAP 2.17.0 で実測）
+
+`exclude.paths` は「**そこへリクエストを送ると困るパス**」を列挙するものである（`/logout` は
+セッションが消える、`/admin/delete-all` や `/api/reset` はデータが壊れる）。したがって効かせる先は
+**送信する経路**であり、下表が唯一の列挙である（他所にコピーしない）。
+
+| 経路 | 効かせ方 | 実測メモ |
+| --- | --- | --- |
+| Spider | Context 除外（`context/action/excludeFromContext`） | 除外URLへのリクエスト0・spider results にも出ない。**後から除外しても以降は効く** |
+| Ajax Spider | 同上 | Context のスコープで動く |
+| Active Scan | Context 除外（Context 指定起動なので自動的に効く）。特定スキャナだけ外したいときは `ascan/action/excludeFromScan` | Context 除外で攻撃0回（対照は16回） |
+| 工程4 Playwright | **プロンプト規律のみ**（ZAP側の担保は無い） | `core/action/excludeFromProxy` は存在するが意味を未実測なので担保に数えない |
+| 工程6 LLMプローブ | **プロンプト規律** ＋ `zap_auth.py` の `path_is_excluded`（リダイレクト追従の判定） | 送信はLLMが行うため機械的担保は部分的 |
+
+**Passive Scan は対象に含めない。** Passive は自分では何も送らないため、除外の対象になる筋の機能では
+ない。**除外したURLに Passive アラートが出ていたら、それは上表のどこかで除外が漏れて「送ってしまった」
+サイン**である。消すのではなく、送った経路を直すこと。
+（実測：Context 除外は Passive に効かず、`pscan/action/setScanOnlyInScope` を `true` にすれば効く
+──`pscan/view/scanOnlyInScope` の既定は `false`。だが**採用しない**：安全上の効果はゼロで、代わりに
+スコープ外通信の Passive アラートを全部失い、しかもこれは `newSession` でも戻らないグローバル設定である。）
+
+**粒度と副作用**（どちらを使うかで結果が変わる）：
+
+- **Context 除外**：送信経路をまとめて塞げる。ただし**その URL には forced-user の認証が乗らなくなる**
+  （実測：除外前 200＋ログイン試行1回 → 除外後 401・`Authorization` ヘッダ無し・ログイン試行0回）。
+  除外してはいけないURLは `references/authentication.md`「除外してはいけないURL」。
+- **スキャナ単位除外**（`spider|ascan/action/excludeFromScan`）：そのスキャナだけ。認証は乗ったまま。
+  ただし**セッション単位**で、**Context を削除しても残る** — 後始末で `clearExcludedFromScan` を
+  呼ばないと**利用者のZAPに残り、以後のスキャンが黙って一部を飛ばす**。**`contextName` を付けて
+  呼んでも ZAP は `OK` を返して黙って無視する**（Context 単位だと誤解した呼び出しがエラーにならない）。
+
+**`exclude.paths`（パス）→ 除外正規表現への変換**：`validate_config.py` は「前置き一致」で検証する
+（`/logout` は `/logout/...` も飲む）ので、正規表現も同じ意味に揃える。クエリ付き（`/logout?x=1`）も
+含める形にすること。食い違うと「検証は通ったのに ZAP では除外されていない」が起きる。
 
 `allowed_hosts` ＋ `base_url` から推奨する include 正規表現：ホストをエスケープし、スキーマと
 任意ポートを許可する。例：`^https?://localhost(:\d+)?/.*$`。許可ホストごとに1つ追加する。

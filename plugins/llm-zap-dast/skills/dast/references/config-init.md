@@ -38,7 +38,8 @@
    - `safety`：`require_local_target: true`、**`allow_production: false`**。
    - `exclude.paths`：`login_url`/`verification_url` は入れない。`/logout` は認証維持のため除外候補に
      挙げる。**データ破壊系（`/admin/delete-all`・`/api/reset` 等）は扱いが分かれる点を明示する**：
-     `exclude.paths` は Spider/Ajax/Passive/Active（工程3〜5）**だけでなく工程6のシナリオ診断にも効く**。
+     `exclude.paths` は**リクエストを送る経路すべて**に効く（**工程6のシナリオ診断にも効く**。経路の
+     一覧は `references/zap-integration.md`「exclude の効かせ方」）。
      一方、生成物の既定は `scan.destructive: true`（工程6で削除/リセット系を**意図的に検証したい**）。
      したがって「工程4/5 の無秩序なクロール/Active から外すが工程6では個別に検証する」のか「全工程で
      完全に触れない」のかは**別の選択**であり、除外に入れると destructive の主目的が空振りする。両者を

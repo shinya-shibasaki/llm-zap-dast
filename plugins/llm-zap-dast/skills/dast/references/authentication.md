@@ -103,7 +103,8 @@ teardown と後続工程で必要になるが、どれも一度しか返らな�
    - primary は **Browser Based Authentication**（SPA/CSRF/JSに対応しつつ ZAP が自動再認証を持つ）。
    - **ZAP が扱えないフローなら停止する。** Playwright ログインへ退避しない
      （下記「Playwright ログインへ退避しない」）。
-3. **Context 作成** → **スコープ登録（`include-in-context`）** → **認証方式設定** →
+3. **Context 作成** → **スコープ登録（`include-in-context`：include と `exclude.paths` の両方を、
+   `allowed_hosts` の全ホスト分まとめて）** → **認証方式設定** →
    **Session Management 設定** → **Verification 設定** → **User 作成** →
    **資格情報設定**（`set-credentials`：env 変数名から読む。**値は印字・保存しない**）
    → **User を有効化**（`set-user-enabled`）→ **forced-user ON**（`set-forced-user --state on`）。
@@ -116,8 +117,13 @@ teardown と後続工程で必要になるが、どれも一度しか返らな�
    `setForcedUser` → `setForcedUserModeEnabled(true)` の後に確認を回している
    （`tests/live/test_live_auth_cookie.py`）。
 
-   **スコープ登録は省略できない。** ZAP は「Context に含まれる URL」にしか認証を適用しないため、
-   include が空だと**認証設定はすべて無効**になる。実測（同一手順で include の有無だけを変えた比較）:
+   **スコープ登録は省略できない。ここが run 全体のスコープ確定点でもある。** 工程2.5 は
+   `test-authentication` / `verify-canary` が `accessUrl` で実トラフィックを流すので、**ZAP 経由の
+   最初の対象通信はこの工程で起きる**。除外は送ってしまった後では取り消せないため、`exclude.paths` も
+   ここで一緒に登録する（工程3 まで待たない）。
+
+   ZAP は「Context に含まれる URL」にしか認証を適用しないため、include が空だと**認証設定はすべて
+   無効**になる。実測（同一手順で include の有無だけを変えた比較）:
 
    | | include なし | include あり |
    |---|---|---|
@@ -160,6 +166,25 @@ teardown と後続工程で必要になるが、どれも一度しか返らな�
 - **ユーザーに尋ねるのは次のときだけ**：`./.env` が無く、かつ指定の環境変数が（既に export された形でも）
   見つからないとき——このとき初めて資格情報の入手方法を尋ねる。`.env` が `.gitignore` 対象でない場合は、
   読み込みは行いつつ redaction 警告を出す（SKILL 工程0）。既定のファイルは `./.env`。
+
+### 除外してはいけないURL（`exclude.paths`）
+
+**機構（実測）**：URL を Context から除外すると、**その URL には forced-user の資格情報が付かなくなる**。
+同じ URL が除外前は 200＋ログイン試行1回、除外後は **401・`Authorization` ヘッダ無し・ログイン試行0回**
+になった。**エラーは出ない。**
+
+したがって次の4つを `exclude.paths` に入れてはいけない：
+
+| 入れてはいけないもの | 入れるとどうなるか | 機械的な検査 |
+| --- | --- | --- |
+| `authentication.login_url` | ZAP がログインできず、再認証もできない | `validate_config.py` が **error で拒否** |
+| `authentication.verification.verification_url`（POLL_URL の宛先） | セッションの生死を確認できない | `validate_config.py` が **error で拒否** |
+| **`verify-canary` に渡す3本のURL** | forced-user が乗らず匿名で飛ぶ → カウンタが動かない → 「検証が一度も走っていない」と**誤判定して run 停止** | **無し**（実行時にLLMが選ぶため設定検査では捕まらない） |
+| **`target.base_url` を飲み込む除外**（`/` や base のパス） | Context が実質空になり、認証も乗らず探索も走らず run が空振り | **無し** |
+
+下2つは**誰も止めてくれない**ので、LLM が選ぶ時点で守ること。とくにカナリアは「認証設定は正しいのに
+run が止まる」という最もデバッグしにくい形になる。経路ごとの除外の効かせ方は
+`references/zap-integration.md`「exclude の効かせ方」。
 
 ### 検証設定（Verification）の決め方
 
@@ -357,11 +382,12 @@ OFF だと匿名のトラフィックを数えることになる。
 
 **URLの選び方**（工程2の診断対象マップから選ぶ。工程3はまだ走っていないのでZAP履歴は使えない）：
 
-- **include 正規表現の内側**であること。Context 外のURLには forced user が適用されず匿名で飛ぶ
-  ため（上記 include の実測）、カウンタが動かず「検証が一度も走っていない」と**誤判定**する。
-- **`exclude.paths`・状態変更エンドポイント・ログアウト系を選ばない。** `verify-canary` は
-  `test-authentication` と違い、ログアウト判定も exclude 判定も**通さずそのまま送る** —
-  `/logout` を選ぶと**検証中のセッションが消える**。
+- **include 正規表現の内側**で、かつ **`exclude.paths` の外側**であること（上記
+  「除外してはいけないURL」）。どちらを外しても forced user が適用されず匿名で飛び、カウンタが
+  動かないので「検証が一度も走っていない」と**誤判定**する。
+- **状態変更エンドポイント・ログアウト系を選ばない。** `verify-canary` は `test-authentication` と
+  違い、ログアウト判定も exclude 判定も**通さずそのまま送る** — `/logout` を選ぶと**検証中の
+  セッションが消える**。
 - 3種の例：認証後にのみ意味のあるHTML画面／認証後のJSON API（`/api/me` 等）／認証と無関係な
   エラー（存在しないパスの404で足りる）。
 

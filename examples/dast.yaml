@@ -71,7 +71,10 @@ safety:
   allow_production: false
 
 exclude:
-  paths:                  # Spider / Ajax / Passive / Active / Playwright に適用
+  # 「そこへリクエストを送ると困るパス」を書く。リクエストを送る経路すべてに適用される。
+  # 認証に必要なURL（login_url / verification_url / カナリア）は入れない — 除外すると
+  # そのURLには認証が乗らなくなる。
+  paths:
     - /logout
     - /admin/delete-all
     - /api/reset

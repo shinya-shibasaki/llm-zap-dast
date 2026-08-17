@@ -265,12 +265,61 @@ def test_scan_as_user_seeds_a_canonical_url(monkeypatch):
         policy = None
         gate_passed = True
 
+    # The crawlers take a seed URL and are happy with the bare origin canonicalised.
     zap_auth.cmd_spider_as_user(cfg, Args())
-    assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
-    zap_auth.cmd_active_scan_as_user(cfg, Args())
     assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
     zap_auth.cmd_ajax_spider_as_user(cfg, Args())
     assert seen["scanAsUser"]["url"] == "http://localhost:3000/"
+
+
+def test_active_scan_as_user_scans_the_context_not_a_url(monkeypatch):
+    """No url at all unless one was asked for — measured on ZAP 2.17.0.
+
+    Protected mode (which safety-policy.md mandates) REFUSES a recursive scan seeded at the
+    target root with mode_violation, because recursion makes ZAP evaluate the starting node as
+    the bare site node that the recommended include regex deliberately does not match. The
+    context form launches and reaches the children; `recurse=false` launches and attacks only
+    the seed. So the default must be the context.
+    """
+    seen = {}
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda cfg, f, c, k, n, params=None: seen.update({n: params})
+                        or {"ok": True})
+    monkeypatch.setattr(zap_auth, "_refuse_if_storming", lambda *a: None)
+    cfg = {"target": {"base_url": "http://localhost:3000"}}
+
+    class Args:
+        context_id = "1"
+        user_id = "2"
+        url = None
+        policy = None
+        gate_passed = True
+
+    zap_auth.cmd_active_scan_as_user(cfg, Args())
+    assert "url" not in seen["scanAsUser"]
+    assert seen["scanAsUser"]["contextId"] == "1"
+
+    # An explicit sub-path still narrows the scan, and is still canonicalised.
+    args = Args()
+    args.url = "http://localhost:3000/app"
+    zap_auth.cmd_active_scan_as_user(cfg, args)
+    assert seen["scanAsUser"]["url"] == "http://localhost:3000/app"
+
+
+def test_active_scan_as_user_requires_a_context(monkeypatch):
+    """Dropping the context as well is the one form ZAP answers with missing_parameter, so
+    refuse it here rather than emit a call that cannot work."""
+    monkeypatch.setattr(zap_auth, "_refuse_if_storming", lambda *a: None)
+
+    class Args:
+        context_id = None
+        user_id = "2"
+        url = None
+        policy = None
+        gate_passed = True
+
+    with pytest.raises(zap_auth.AuthUsageError, match="context-id"):
+        zap_auth.cmd_active_scan_as_user({}, Args())
 
 
 def test_parse_include_regexs_handles_both_shapes():

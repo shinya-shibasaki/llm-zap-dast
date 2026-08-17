@@ -223,8 +223,10 @@ output:
 - **キーなしZAPはローカル限定。** `zap.api_url` または `target.base_url` のホストが
   `localhost` / `127.0.0.1` / `::1` 以外の場合、キーなし運用は**拒否**されます。キーを使うには
   `api_key_env` で指定した環境変数を設定します。
-- **`exclude.paths` は全経路に適用**されます — Spider、Ajax Spider、Passive、Active、Playwright。
-  `/logout` はGETで到達し得るため、除外が重要です。
+- **`exclude.paths` は「そこへリクエストを送ると困るパス」**を書きます（`/logout` はセッションが消える、
+  `/admin/delete-all` や `/api/reset` はデータが壊れる）。**リクエストを送る経路すべて**に適用されます —
+  Spider、Ajax Spider、Active Scan、工程4のブラウザ操作、工程6のシナリオ診断。Passive Scan は自分では
+  送らないため対象外です（除外したURLにPassiveのアラートが出たら、それはどこかで送ってしまったサイン）。
 - **認証付きDAST。** `authentication.enabled: true` は「**認証付きで診断する**」という約束です。
   工程2.5がZAPの認証機能を使ってログインし、**差分で「本当に認証できたか」を確認**してから認証後の
   探索/スキャン/シナリオ診断に進みます。primary は ZAP Browser Based Authentication（要 ZAP 2.16.1+）。
@@ -289,14 +291,17 @@ python3 plugins/llm-zap-dast/scripts/zap_auth.py --config examples/dast.yaml det
 
 セキュリティ制御を最優先します：
 
-- 診断対象は `allowed_hosts` のホストのみ。スコープはプロンプトだけでなく、run単位の
-  **ZAP Context** で担保します。
+- 診断対象は `allowed_hosts` のホストのみ。**スキャナ（Spider / Ajax / Active Scan）のスコープ**は
+  プロンプトだけでなく run単位の **ZAP Context** で担保します。スキルが直接行う単発の取得
+  （認証確認・カナリア・工程6のプローブ）は ZAP のモードやスコープでは縛られないため、**スクリプト側の
+  許可ホスト検査とプロンプト規律**で縛ります。
 - **Active Scan は既定ON**で、工程5のゲート（設定＋安全チェック：`allowed_hosts` 内／`active_scan:true`
   ／危険URL除外／非本番または許可）を**すべて満たしたときに実行**します。対象は使い捨てローカルの
   テストアプリ前提のため、**ゲート条件の充足自体が実行の許可**で、対話確認は取りません（実行前に
   対象/除外/ポリシー/想定影響は提示・記録します）。**条件が未充足・曖昧なら Passive までで停止**します。
   このゲートは**ZAPのモードとは独立**です。
-- ZAPは **Protectedモード**で動作。**ATTACKモードは禁止**で、設定検証で拒否します。
+- ZAPは **Protectedモード**で動作（スキャナ経路に効きます）。**ATTACKモードは禁止**で、設定検証で
+  拒否します。
 - **本番は既定で拒否**（`safety.allow_production: false`）。
 - **キーなし＋非ローカルは拒否**。秘匿情報（Cookie/Authorization/トークン/JWT/PII）は既定で
   すべての成果物で**マスク**され、`--keep-raw` を付けない限り生データは残しません。

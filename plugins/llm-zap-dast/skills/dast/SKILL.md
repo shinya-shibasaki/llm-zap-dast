@@ -216,7 +216,10 @@ ZAPが利用可能になったら：
 2. **ZAP Contextとスコープ制御** — **工程2.5で作成済みのContextがあれば、それを使う**
    （Contextを作り直さない：認証設定はContextに紐づくため、別Contextを作ると認証が効かなくなる）。
    無ければここで作成する。include正規表現を `allowed_hosts` に限定；スコープ外はスキャンしない；
-   `exclude.paths` を Spider/Ajax/Passive/Active に適用。
+   `exclude.paths` を**リクエストを送る経路すべて**に適用する（経路と効かせ方は
+   `references/zap-integration.md`「exclude の効かせ方」の表に従う。Passive は送信しないため対象外）。
+   **include と `exclude.paths` は、ZAP 経由で最初の通信が飛ぶ前に確定させる**（認証有効なら工程2.5 の
+   Context 作成時。送ってしまった後の除外は取り消せない）。
    **Protectedモード**を設定（ATTACKは決して使わない）。
 3. Traditional Spider。4. Passive Scan の完了を待つ。5. `scan.ajax_spider: true` なら
    Ajax Spider。6. 到達URL、HTTP履歴、アラートを取得。
@@ -257,9 +260,14 @@ ZAPが利用可能になったら：
 
 ## 工程5 — Active Scan（`references/safety-policy.md` — ゲート）
 
-**このゲートはZAPのモードとは独立です。** Protectedモードは「スコープ外URLを触らない」を守る
-だけで、下記のゲート条件がすべて揃うまで Active Scan API を呼んではいけません — スコープ内URLで
-あっても、です。
+**このゲートはZAPのモードとは独立です。** Protectedモードは**スキャナ経路について**「スコープ外URLを
+触らない」を守るだけで（`core/action/accessUrl` は縛られません＝`references/zap-integration.md`）、
+下記のゲート条件がすべて揃うまで Active Scan API を呼んではいけません — スコープ内URLであっても、です。
+
+**起動の仕方**：Active Scan は **`contextId` を渡し `url` は省いて** Context を対象に起動します
+（Protectedモードでは対象ルートURLを渡した再帰スキャンが `mode_violation` で拒否され、`recurse=false`
+は起動しても配下を1件も撃ちません。実測の詳細は `references/zap-integration.md`
+「Active Scan は Context を対象に起動する」）。
 
 **次のすべてが成立する場合のみ** Active Scanを実行：
 - 対象環境が許可されている／対象ホストが `allowed_hosts` に含まれる／
@@ -379,7 +387,10 @@ ZAPポリシー/想定影響を**提示・記録**するが、**対話確認は�
    User/Context を削除する。ZAP User には**平文の資格情報が残る**ため、これは redaction では
    代替できない（削除が唯一の対策）。ZAP セッションをリポジトリ配下に置かない。消せなければ
    `run.log` と成果物に警告を残す。中断時も必ず実行する。
-2. **スキルがZAPを起動していたとき（工程3のフラグ）だけ**、
+2. **スキャナ単位の除外を使っていたら `clearExcludedFromScan` を呼ぶ**（`spider`／`ascan` の両方）。
+   これはセッション単位の設定で **Context を削除しても残る**ため、消さないと利用者のZAPに残り、
+   以後のスキャンが黙って一部を飛ばす（`references/zap-integration.md`「exclude の効かせ方」）。
+3. **スキルがZAPを起動していたとき（工程3のフラグ）だけ**、
    `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_control.py --config <path> shutdown --json` で停止し、
    `run.log` に記録する。**利用者が事前に起動していたZAPは停止しない**（フラグが立っていなければ
    何もしない）。

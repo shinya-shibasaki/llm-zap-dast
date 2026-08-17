@@ -105,7 +105,10 @@ safety:
   allow_production: false
 
 exclude:
-  # 除外は Spider / Ajax Spider / Passive / Active / Playwright の全経路に適用する。
+  # 「そこへリクエストを送ると困るパス」を書く（/logout はセッションが消える、
+  #  データ削除・リセット系はデータが壊れる）。リクエストを送る経路すべてに適用される。
+  # 認証に必要なURL（login_url / verification_url / カナリア）は入れない — 除外すると
+  # そのURLには認証が乗らなくなる（README の「認証付きDAST」を参照）。
   paths:
     - /logout
     - /admin/delete-all

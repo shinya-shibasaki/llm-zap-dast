@@ -146,4 +146,10 @@ fail-soft は「機能が欠けている」への答えです。「安全を担�
   非ローカル拒否**、認証env名の有無・**`authentication.users` の各アカウント検証**、除外パス形式）。
 - `check_environment.py` — 実行時チェック。ZAPが `0.0.0.0` にバインドされていないかの検知を含む。
 - `redact.py` — エクスポートしたZAP JSON全体をマスク（許可リスト＋既知秘匿パターン除去）。
-- ZAP Context のスコープ — 実行時の実境界。
+- ZAP Context のスコープ — **スキャナ経路（Spider / Ajax / Active Scan）の**実行時の実境界。
+  Protectedモードもこの経路にだけ効く（実測）。
+- **`core/action/accessUrl` 経路はモード（protect / safe とも）にもスコープにも縛られない**（実測）。
+  `test-authentication` / `verify-canary` / 工程6のプローブがこの経路を通るので、**ここの境界は
+  呼び出し側のコードとプロンプト規律だけ**である。`test-authentication` は `allowed_hosts` を
+  検査するが、**`verify-canary` は未検査**（カナリアURLの選定はプロンプト規律に依存する）。
+  詳細は `references/zap-integration.md`「ZAP動作モード」。

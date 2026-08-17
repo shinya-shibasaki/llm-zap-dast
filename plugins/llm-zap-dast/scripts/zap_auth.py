@@ -1506,6 +1506,34 @@ def cmd_ajax_spider_as_user(cfg, args):
 
 
 def cmd_active_scan_as_user(cfg, args):
+    """Authenticated Active Scan over the CONTEXT, not over a URL subtree.
+
+    `url` is sent only when the caller asks for one. VERIFIED ON ZAP 2.17.0, and the reason
+    this command used to be unusable: safety-policy.md mandates Protected mode, and in that
+    mode a recursive scan seeded at the target root is REFUSED —
+
+        ascan/action/scanAsUser url=http://host:port/  (recurse defaults to true)
+            -> mode_violation
+
+    because with recursion ZAP evaluates the starting node as the bare site node
+    `http://host:port`, which the recommended include regex (slash required after the host,
+    the thing that pins the host boundary) does not match. zap.log names it:
+    "Scans are not allowed on nodes not in scope Protected mode http://host:port".
+
+    Omitting `url` scans the context instead, which is what this plugin actually wants — the
+    run's scope IS the context. Measured on the same setup: the context form launches under
+    Protected mode and reaches the children (16 attacks each on two API endpoints) where the
+    url form is refused, and where `recurse=false` launches but attacks ONLY the seed node
+    (0 on both) — a scan that looks successful and tests nothing.
+
+    Also measured, so the substitution is safe: the context form honours the context's
+    exclusions (an excluded endpoint took 0 attacks while its neighbour took 16), never
+    touches a host outside the context even when that host is in ZAP's site tree, and ZAP
+    REFUSES the call outright (`missing_parameter`) if contextId is dropped too — so there is
+    no "scan everything" form to fall into. It covers the context's nodes that are IN ZAP's
+    site tree, so on a reused ZAP session that includes URLs an earlier run discovered; they
+    are inside allowed_hosts and still excluded by exclude.paths, but the report should say so.
+    """
     # The authenticated Active Scan double gate and the step-5 gate conditions live above
     # this script. --gate-passed asserts those conditions were met; it is not a user prompt.
     if not args.gate_passed:
@@ -1514,11 +1542,20 @@ def cmd_active_scan_as_user(cfg, args):
             "scan.active_scan AND authentication.active_scan true AND the step-5 gate "
             "conditions met (no interactive confirmation). Refusing to launch."
         )
+    if not args.context_id:
+        raise AuthUsageError(
+            "active-scan-as-user requires --context-id: the scan is scoped by the context, "
+            "and ZAP refuses the call with 'missing_parameter' when neither a context nor a "
+            "url is given."
+        )
     _refuse_if_storming(cfg, "active-scan-as-user")
-    return zap_call(cfg, "JSON", "ascan", "action", "scanAsUser",
-                    {"contextId": args.context_id, "userId": args.user_id,
-                     "url": seed_url(args.url or _get(cfg, "target", "base_url", default="")),
-                     "scanPolicyName": args.policy or ""})
+    params = {"contextId": args.context_id, "userId": args.user_id,
+              "scanPolicyName": args.policy or ""}
+    if args.url:
+        # An explicit --url narrows the scan to that subtree. Under Protected mode a bare
+        # origin still fails (see above), so it is only useful for a real sub-path.
+        params["url"] = seed_url(args.url)
+    return zap_call(cfg, "JSON", "ascan", "action", "scanAsUser", params)
 
 
 def scrub_users_list(users_data):
