@@ -14,7 +14,7 @@ mechanically applies those settings to ZAP's REST API. Design rules enforced her
     and reports `evidence_complete: false` (exit 1) when either read did not happen, since a
     missing response is not an absent indicator.
   * `active-scan-as-user` requires `--gate-passed` — the authenticated Active Scan double
-    gate + step-5 confirmation live above this script; it will not launch otherwise.
+    gate and the step-5 gate conditions live above this script; it will not launch otherwise.
   * `set-credentials` reads credentials from environment variables by NAME and never prints
     or returns their values.
   * `clear-authentication` removes the temporary User/Context so the credential-bearing ZAP
@@ -1506,12 +1506,13 @@ def cmd_ajax_spider_as_user(cfg, args):
 
 
 def cmd_active_scan_as_user(cfg, args):
-    # The authenticated Active Scan double gate + step-5 confirmation live above this script.
+    # The authenticated Active Scan double gate and the step-5 gate conditions live above
+    # this script. --gate-passed asserts those conditions were met; it is not a user prompt.
     if not args.gate_passed:
         raise AuthUsageError(
             "active-scan-as-user requires --gate-passed. Authenticated Active Scan needs "
-            "scan.active_scan AND authentication.active_scan true AND step-5 user "
-            "confirmation. Refusing to launch."
+            "scan.active_scan AND authentication.active_scan true AND the step-5 gate "
+            "conditions met (no interactive confirmation). Refusing to launch."
         )
     _refuse_if_storming(cfg, "active-scan-as-user")
     return zap_call(cfg, "JSON", "ascan", "action", "scanAsUser",

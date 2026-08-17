@@ -72,7 +72,8 @@ authentication:
     verification_url:
   session_management:
     method: auto         # auto | cookie | header | script
-  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5の明示確認が必要。
+  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5のゲート条件充足で実行
+  # （対話確認は取らない）。
   active_scan: true      # 既定ON
 
 scan:

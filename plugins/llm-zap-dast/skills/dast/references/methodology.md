@@ -25,7 +25,7 @@
 3. ZAP初期探索：Context＋スコープ、Spider、Passive、任意でAjax、収集
    （`zap-integration.md`）。
 4. カバレッジ比較＋Playwright補完 → `coverage-analysis.md`（`scenario-testing.md`）。
-5. Active Scan — ゲート付き・確認優先（`safety-policy.md`）。
+5. Active Scan — ゲート付き。条件を満たせば無確認で実行（`safety-policy.md`）。
 6. シナリオベース診断 → `scenarios.md`（`scenario-testing.md`）。
 7. 結果整理＋レポート → `findings.md`、`report.md`（`report-format.md`）。
 
@@ -43,7 +43,8 @@
 
 ## チェックポイントと部分実行
 
-- 工程ごとにサマリを出し、次へ進む前に確認する（工程5の前は必須）。
+- 工程ごとにサマリを出し、**確認は取らずそのまま次工程へ進む**（工程5 Active Scan も同じ。
+  ゲート条件の充足自体が実行許可＝`safety-policy.md`）。安全上の停止条件に該当したときだけ止まる。
 - `--only <step>` は1工程のみ、`--from <step>` は指定工程から再開。いずれの場合も工程0の安全
   ゲートが先に必ず走る。
 - 各工程の成果物は `reports/dast/<run-id>/` 配下の個別ファイルとし、人間が1工程ずつ見直せる

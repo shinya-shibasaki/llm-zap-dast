@@ -385,11 +385,13 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                 )
 
         # Authenticated Active Scan is an ADDITIONAL gate on top of scan.active_scan.
-        # Default ON (matches scan.active_scan); it still needs both gates + step-5 confirm.
+        # Default ON (matches scan.active_scan); it still needs both gates plus the step-5
+        # gate conditions (which are not an interactive confirmation).
         if bool(auth.get("active_scan", True)) and not active_scan:
             warnings.append(
                 "authentication.active_scan is true but scan.active_scan is false; "
-                "authenticated Active Scan requires BOTH gates true (and step-5 confirmation)."
+                "authenticated Active Scan requires BOTH gates true (and the step-5 gate "
+                "conditions)."
             )
 
     # --- exclude path form ---------------------------------------------------

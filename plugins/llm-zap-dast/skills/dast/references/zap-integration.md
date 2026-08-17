@@ -69,7 +69,7 @@ curl -s "http://127.0.0.1:8080/JSON/core/view/version/?apikey=$ZAP_API_KEY"
   （コンテキスト**名**を取る。`authentication` 側には無い）；
   `/JSON/forcedUser/action/setForcedUser/`、`.../setForcedUserModeEnabled/`；
   User指定スキャン：`/JSON/spider/action/scanAsUser/`、`/JSON/ajaxSpider/action/scanAsUser/`、
-  `/JSON/ascan/action/scanAsUser/`（**認証付きActive Scanは二重ゲート＋確認が前提**）。
+  `/JSON/ascan/action/scanAsUser/`（**認証付きActive Scanは二重ゲート＋工程5ゲート条件の充足が前提**）。
   **Browser Based Authentication は ZAP 2.16.1+ ＋ Firefox が必要**（下記「ブラウザ前提」）。
   利用可否は実行時に `zap_auth.py detect-capabilities` で確認する（バージョン差を吸収）。
 

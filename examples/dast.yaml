@@ -46,14 +46,14 @@ authentication:
     verification_url:       # 認証後にのみ到達できるURL
   session_management:
     method: auto         # auto | cookie | header | script
-  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5の明示確認が必要。
-  active_scan: true      # 既定ON。scan.active_scan と AND ＋ 工程5の明示確認で実行
+  # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5のゲート条件充足で実行。
+  active_scan: true      # 既定ON。scan.active_scan と AND。対話確認は取らない
 
 scan:
   spider: true
   ajax_spider: false      # ZAPが Firefox を起動する（必須依存。READMEの前提条件を参照）
   playwright: true
-  active_scan: true       # 既定ON。実行時は工程5のゲート＋明示確認が必須
+  active_scan: true       # 既定ON。実行時は工程5のゲート条件を満たせば無確認で実行
   scenario_tests: true
   destructive: true       # 対象アプリ内部の破壊的検証。既定ON（使い捨てローカル対象前提）。
                           # 制御するのは LLM主導の工程4・6のみ。非ローカル＋allow_production:false は拒否。

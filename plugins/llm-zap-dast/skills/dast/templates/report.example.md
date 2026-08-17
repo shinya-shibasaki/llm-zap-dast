@@ -27,7 +27,7 @@ _LLM支援型グレーボックスDAST（ソース解析＋OWASP ZAP＋ブラウ
 | 2 診断対象マップ | 実行 | |
 | 3 ZAP探索 | 実行 / スキップ | <例：ZAP不達> |
 | 4 Playwright | 実行 / スキップ | <例：Playwright未導入> |
-| 5 Active Scan | スキップ | <未有効化 / 未確認> |
+| 5 Active Scan | スキップ | <`active_scan: false` / ゲート条件が未充足・曖昧> |
 | 6 シナリオ | 実行 | |
 | 7 レポート | 実行 | |
 
