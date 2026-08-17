@@ -1166,3 +1166,56 @@ def test_set_credentials_does_not_echo_secret_values(monkeypatch):
     blob = str(out)
     assert "sup3r-s3cr3t-value" not in blob
     assert "alice" not in blob
+
+
+# --- exit-code contract: a failed command must not report success ------------
+def test_detect_capabilities_is_not_ok_when_zap_is_unreachable(monkeypatch):
+    """authentication.md makes detect-capabilities the test for "ZAP's authentication
+    features are unusable", which is a STOP condition. Without a top-level ok key main()
+    would exit 0 and the caller would walk past it."""
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda *a, **k: {"ok": False, "status": None, "data": None})
+    cfg, _ = zap_auth._load_cfg(EXAMPLE_CFG)
+    out = zap_auth.cmd_detect_capabilities(cfg, _Args())
+    assert out["ok"] is False
+    assert out["reachable"] is False
+
+
+def test_detect_capabilities_is_not_ok_when_zap_refuses_the_auth_view(monkeypatch):
+    """ZAP is up, but the authentication view is rejected (missing add-on, bad key)."""
+    def fake(cfg, fmt, component, kind, name, params=None):
+        if component == "authentication":
+            return {"ok": False, "status": 400,
+                    "data": {"code": "no_implementor", "message": "no"}}
+        return {"ok": True, "status": 200, "data": {"version": "2.17.0"}}
+
+    monkeypatch.setattr(zap_auth, "zap_call", fake)
+    cfg, _ = zap_auth._load_cfg(EXAMPLE_CFG)
+    out = zap_auth.cmd_detect_capabilities(cfg, _Args())
+    assert out["reachable"] is True
+    assert out["ok"] is False
+
+
+def test_set_forced_user_reports_a_failed_call(monkeypatch):
+    """A silently failed setForcedUser makes test-authentication read the unauthenticated
+    side twice, which looks like a target that cannot authenticate and stops the run."""
+    monkeypatch.setattr(zap_auth, "zap_call", lambda *a, **k: {
+        "ok": False, "status": 400, "data": {"code": "illegal_parameter", "message": "no"}})
+    cfg, _ = zap_auth._load_cfg(EXAMPLE_CFG)
+    args = _Args()
+    args.state = "on"
+    args.user_id = "3"
+    args.context_id = "1"
+    out = zap_auth.cmd_set_forced_user(cfg, args)
+    assert out["ok"] is False
+
+
+def test_set_forced_user_off_is_ok_when_the_call_succeeds(monkeypatch):
+    monkeypatch.setattr(zap_auth, "zap_call",
+                        lambda *a, **k: {"ok": True, "status": 200, "data": {"Result": "OK"}})
+    cfg, _ = zap_auth._load_cfg(EXAMPLE_CFG)
+    args = _Args()
+    args.state = "off"
+    out = zap_auth.cmd_set_forced_user(cfg, args)
+    assert out["ok"] is True
+    assert out["forced_user_enabled"] is False

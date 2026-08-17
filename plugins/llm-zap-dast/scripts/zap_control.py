@@ -150,13 +150,25 @@ def build_start_command(cfg):
     )
 
 
+def scrub_command(argv, key):
+    """The start command with the API key masked, for display only.
+
+    `detect` prints its result as JSON and the caller records it, but the command holds
+    `-config api.key=<the key>` in clear. `start()` uses build_start_command() directly, so
+    masking here never reaches the process that is actually launched.
+    """
+    if not argv or not key:
+        return argv
+    return [str(a).replace(str(key), "***REDACTED:apikey***") for a in argv]
+
+
 def detect(cfg):
     argv, method, error = build_start_command(cfg)
     return {
         "autostart_enabled": bool(_get(cfg, "zap", "autostart", default=True)),
         "launchable": argv is not None,
         "method": method,
-        "command": argv,
+        "command": scrub_command(argv, _api_key(cfg)),
         "error": error,
     }
 

@@ -525,6 +525,19 @@ def evidence_from_responses(authed: Response, unauth: Response, logged_in_indica
 
 # --- commands ----------------------------------------------------------------
 def cmd_detect_capabilities(cfg, _args):
+    """What this ZAP can authenticate with. Exits non-zero when it cannot answer.
+
+    `ok` is not decoration: references/authentication.md makes this command the test for
+    "ZAP's authentication features are unusable", which is a STOP condition under
+    `authentication.enabled: true`. Without a top-level ok/applied/complete key, main()
+    returns 0 (see its exit-code contract), so an unreachable ZAP would pass the very check
+    meant to catch it.
+
+    `ok` means both calls were ACCEPTED (zap_call already refuses ZAP's HTTP 400 + error
+    body). It deliberately does not judge the CONTENT of the method list: which methods a
+    given build offers, and how that list is shaped, is a ZAP fact this repo has not
+    measured. The caller reads `supported_authentication_methods` and decides.
+    """
     version = zap_call(cfg, "JSON", "core", "view", "version")
     auth_methods = zap_call(cfg, "JSON", "authentication", "view",
                             "getSupportedAuthenticationMethods")
@@ -535,6 +548,7 @@ def cmd_detect_capabilities(cfg, _args):
         "supported_authentication_methods": _get(auth_methods, "data"),
         "supported_session_management_methods": _get(session_methods, "data"),
         "reachable": bool(version.get("ok")),
+        "ok": bool(version.get("ok")) and bool(auth_methods.get("ok")),
     }
 
 
@@ -1358,7 +1372,15 @@ def cmd_test_authentication(cfg, args):
 
 
 def cmd_set_forced_user(cfg, args):
-    """Enable/disable forced-user mode. Disable before any scan that is NOT gated as authed."""
+    """Enable/disable forced-user mode. Disable before any scan that is NOT gated as authed.
+
+    A failure here has to be loud. `test-authentication` and `verify-canary` both drive their
+    authenticated side through ZAP with `core/action/accessUrl`, which only carries the
+    credentials while forced-user mode is on — so a silently failed `setForcedUser` turns the
+    differential read into unauthenticated-vs-unauthenticated, which looks exactly like a
+    correctly configured target that cannot authenticate, and stops the run. `ok` is
+    top-level because that is the key main() maps to the exit code.
+    """
     enabled = str(args.state).lower() in ("on", "true", "1", "enable", "enabled")
     out = {}
     if enabled:
@@ -1369,6 +1391,7 @@ def cmd_set_forced_user(cfg, args):
     out["mode"] = zap_call(cfg, "JSON", "forcedUser", "action", "setForcedUserModeEnabled",
                            {"boolean": "true" if enabled else "false"})
     out["forced_user_enabled"] = enabled
+    out["ok"] = all(bool(out[k].get("ok")) for k in ("set_user", "mode") if k in out)
     return out
 
 

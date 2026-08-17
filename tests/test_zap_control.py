@@ -79,3 +79,24 @@ def test_detect_reports_disabled(monkeypatch):
 def test_port_parsed_from_api_url():
     assert zap_control._api_port(_cfg()) == 8080
     assert zap_control._api_port({"zap": {"api_url": "http://localhost:9090"}}) == 9090
+
+
+def test_detect_does_not_print_the_api_key(monkeypatch):
+    """`detect` emits its command as JSON for the caller to record; the raw argv holds
+    `-config api.key=<key>`."""
+    monkeypatch.setenv("ZAP_API_KEY", "sup3r-s3cr3t-key")
+    monkeypatch.setattr(zap_control.shutil, "which",
+                        lambda name: "/usr/bin/zap.sh" if name == "zap.sh" else None)
+    det = zap_control.detect(_cfg())
+    assert det["launchable"] is True
+    assert "sup3r-s3cr3t-key" not in str(det)
+    assert any("***REDACTED:apikey***" in a for a in det["command"])
+
+
+def test_scrubbing_does_not_touch_the_launched_command(monkeypatch):
+    """start() builds its argv directly, so the real key must still reach ZAP."""
+    monkeypatch.setenv("ZAP_API_KEY", "sup3r-s3cr3t-key")
+    monkeypatch.setattr(zap_control.shutil, "which",
+                        lambda name: "/usr/bin/zap.sh" if name == "zap.sh" else None)
+    argv, _, _ = zap_control.build_start_command(_cfg())
+    assert "api.key=sup3r-s3cr3t-key" in argv

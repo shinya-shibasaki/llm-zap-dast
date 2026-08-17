@@ -156,3 +156,25 @@ def test_missing_firefox_does_not_make_the_run_fail(monkeypatch, tmp_path):
         c["name"] == "zap_bind_scope" and c["status"] == "warn" for c in checks)
     assert not has_fail
     assert not has_security_warn
+
+
+def test_zap_api_key_never_reaches_the_check_output(monkeypatch, tmp_path):
+    """The key rides in the version URL's query, and both requests and urllib put the URL
+    they failed on into the exception text — so an unreachable ZAP (the common fail-soft
+    case) used to write the key into environment-check.json and stdout."""
+    monkeypatch.setenv("ZAP_API_KEY", "sup3r-s3cr3t-key")
+    monkeypatch.setattr(check_environment, "_http_get",
+                        lambda url, timeout=5: (False, None,
+                                                f"Max retries exceeded with url: {url}"))
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: None)
+    cfg = {"zap": {"api_url": "http://localhost:8080", "api_key_env": "ZAP_API_KEY"},
+           "output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "dast.yaml")
+    assert "sup3r-s3cr3t-key" not in str(checks)
+    # The diagnostic itself must survive the scrubbing.
+    assert "***REDACTED:apikey***" in _by_name(checks, "zap_reachable")["detail"]
+
+
+def test_scrub_secret_is_a_noop_without_a_key():
+    assert check_environment._scrub_secret("plain text", "") == "plain text"
+    assert check_environment._scrub_secret("plain text", None) == "plain text"

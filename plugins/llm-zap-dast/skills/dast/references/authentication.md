@@ -76,8 +76,11 @@
   ```
   set -a; [ -f ./.env ] && . ./.env; set +a; \
   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zap_auth.py set-credentials --config <path> \
-    --username-env DAST_USERNAME --password-env DAST_PASSWORD --context <ctx> --user-id <id>
+    --username-env DAST_USERNAME --password-env DAST_PASSWORD \
+    --context-id <contextId> --user-id <userId>
   ```
+  `set-credentials` は Context を **id** で受け取る（`--context` は名前を取るコマンド用で、ここでは
+  効かない — 渡しても `contextId` が空のまま ZAP に拒否される）。
   `set -a` で `.env` の代入を export し、同じ呼び出しで起動する python がそれを継承する
   （`.`＝source は値を印字しない）。**環境変数が保持されないため、資格情報を使う各コマンド**
   （アカウントごとの `set-credentials`、工程0 の環境チェック等）**にこの前置きを毎回付ける**。

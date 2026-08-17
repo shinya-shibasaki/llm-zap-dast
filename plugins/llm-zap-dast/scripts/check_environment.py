@@ -83,6 +83,25 @@ def _http_get(url, timeout=5):
             return False, None, str(exc)
 
 
+def _scrub_secret(text, secret):
+    """Remove a secret VALUE from a message before it becomes an artifact.
+
+    The ZAP API key travels as a query parameter (`?apikey=...`), and both requests and
+    urllib put the URL they failed on into the exception text — so an unreachable ZAP, the
+    most common fail-soft case there is, answers with the key in clear:
+
+        HTTPConnectionPool(...): Max retries exceeded with url:
+        /JSON/core/view/version/?apikey=<the key> (Caused by NewConnectionError(...))
+
+    Step 0 saves this output to `environment-check.json` and prints it, which is exactly what
+    safety-policy.md rule 7 forbids. Scrubbing the value keeps the diagnostic (host, port,
+    errno) while dropping the secret.
+    """
+    if not secret:
+        return text
+    return str(text).replace(str(secret), "***REDACTED:apikey***")
+
+
 def _check(name, status, detail):
     return {"name": name, "status": status, "detail": detail}
 
@@ -291,6 +310,8 @@ def run_checks(cfg, config_path):
         if key:
             version_url += "?apikey=" + key
         ok, _, detail = _http_get(version_url)
+        # The failure text carries the URL we called, and that URL carries the API key.
+        detail = _scrub_secret(detail, key)
         hint = ""
         if not ok:
             hint = (" | WSL note: 'localhost' may not reach a ZAP running on the Windows "
