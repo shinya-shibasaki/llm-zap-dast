@@ -51,19 +51,45 @@ def test_skill_directory_name_drives_command():
 def test_references_and_templates_present():
     ref = os.path.join(PLUGIN_DIR, "skills", "dast", "references")
     tpl = os.path.join(PLUGIN_DIR, "skills", "dast", "templates")
+    # All nine references, authentication.md included: it is the authority for step 2.5 and
+    # was the one file this list forgot, so the authenticated half of the plugin could have
+    # gone missing from a release with the suite still green.
     for name in ("methodology.md", "safety-policy.md", "source-analysis.md",
                  "zap-integration.md", "scenario-testing.md", "redaction.md",
-                 "report-format.md", "config-init.md"):
+                 "report-format.md", "config-init.md", "authentication.md"):
         assert os.path.isfile(os.path.join(ref, name)), f"missing reference {name}"
     for name in ("dast-config.example.yaml", "target-map.example.md",
-                 "scenario-list.example.md", "report.example.md"):
+                 "scenario-list.example.md", "report.example.md",
+                 "authentication.example.md"):
         assert os.path.isfile(os.path.join(tpl, name)), f"missing template {name}"
 
 
 def test_scripts_present():
     scripts = os.path.join(PLUGIN_DIR, "scripts")
-    for name in ("check_environment.py", "validate_config.py", "redact.py", "zap_control.py"):
+    for name in ("check_environment.py", "validate_config.py", "redact.py", "zap_control.py",
+                 "zap_auth.py"):
         assert os.path.isfile(os.path.join(scripts, name)), f"missing script {name}"
+
+
+def test_every_reference_and_template_is_linked_from_the_skill():
+    """A file nothing points at is a file the run never opens.
+
+    SKILL.md is the flow controller and reaches the detail through links; references link
+    each other. authentication.example.md was reachable from nothing at all.
+    """
+    skill_dir = os.path.join(PLUGIN_DIR, "skills", "dast")
+    corpus = ""
+    for sub in ("", "references", "templates"):
+        d = os.path.join(skill_dir, sub)
+        for name in os.listdir(d):
+            if name.endswith(".md"):
+                with open(os.path.join(d, name), encoding="utf-8") as fh:
+                    corpus += fh.read()
+    for sub in ("references", "templates"):
+        for name in sorted(os.listdir(os.path.join(skill_dir, sub))):
+            if not name.endswith((".md", ".yaml")):
+                continue
+            assert name in corpus, f"{sub}/{name} is referenced by no other file"
 
 
 def test_manifests_not_holding_extra_dirs():

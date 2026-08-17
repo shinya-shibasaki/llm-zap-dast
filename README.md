@@ -150,7 +150,7 @@ claude plugin install llm-zap-dast@shibasaki-security-tools --scope local
 | `/llm-zap-dast:dast http://localhost:3000` | 位置引数のURLで `target.base_url` を上書き |
 | `/llm-zap-dast:dast --config dast.yaml` | 設定ファイルを指定 |
 | `/llm-zap-dast:dast --init` | リポジトリ解析から `dast.yaml` の下書きを生成（確認後に書き出し） |
-| `/llm-zap-dast:dast --only <step>` | その工程（0–7）のみ実行 |
+| `/llm-zap-dast:dast --only <step>` | その工程のみ実行（`0` `1` `2` `2.5` `3` `4` `5` `6` `7`） |
 | `/llm-zap-dast:dast --from <step>` | その工程から工程7まで再開 |
 | `/llm-zap-dast:dast --keep-raw` | マスク前の生データを保持（既定：保持しない） |
 

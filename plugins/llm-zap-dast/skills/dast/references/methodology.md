@@ -22,6 +22,9 @@
 0. 実行条件・安全ゲート（`safety-policy.md`）。
 1. ソースコード解析（`source-analysis.md`）。
 2. 診断対象マップ → `target-map.md`（テンプレート `templates/target-map.example.md`）。
+2.5. 認証設定＋認証確認（`authentication.enabled: true` のときのみ）→ `authentication.md`
+   （`references/authentication.md`、テンプレート `templates/authentication.example.md`）。
+   **認証付きで診断できないと分かったら run を停止する**（fail-soft の対象外）。
 3. ZAP初期探索：Context＋スコープ、Spider、Passive、任意でAjax、収集
    （`zap-integration.md`）。
 4. カバレッジ比較＋Playwright補完 → `coverage-analysis.md`（`scenario-testing.md`）。

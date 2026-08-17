@@ -40,6 +40,8 @@ authentication:
   #   - { label: admin, role: admin, username_env: DAST_ADMIN_USER, password_env: DAST_ADMIN_PASS }
   max_attempts: 3        # ログイン試行の上限（ロックアウト回避）
   verification:          # 「本当に認証できたか」を差分で確認する（工程2.5・安全の急所）
+    # 実際の検証戦略は工程2.5でLLMが決め、zap_auth.py configure-verification --strategy
+    # （POLL_URL 推奨）で反映する。ここの method は方針メモで、そのままZAPへは渡らない。
     method: auto         # auto | url | indicator
     logged_in_indicator:    # 任意。LLMが導出してもよい
     logged_out_indicator:
@@ -50,6 +52,8 @@ authentication:
   active_scan: true      # 既定ON。scan.active_scan と AND。対話確認は取らない
 
 scan:
+  # spider / playwright は予約キー。Spider（工程3）は常時実行し、Playwright（工程4/6）の可否は
+  # 工程0の playwright チェックで決まるので、false にしても工程はスキップされない。
   spider: true
   ajax_spider: false      # ZAPが Firefox を起動する（必須依存。READMEの前提条件を参照）
   playwright: true

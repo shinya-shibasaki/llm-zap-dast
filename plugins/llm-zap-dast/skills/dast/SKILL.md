@@ -144,7 +144,7 @@ degrade しない。認証有効中に **ZAPが到達不能になった場合も
 
 ---
 
-## 工程2.5 — 認証設定と認証確認（`authentication.enabled` 時のみ）（`references/authentication.md`）
+## 工程2.5 — 認証設定と認証確認（`authentication.enabled` 時のみ）（`references/authentication.md`、テンプレート `templates/authentication.example.md`）
 
 **`authentication.enabled: true` は「認証付きで診断する」という約束である。** 工程2と工程3の
 間で実行し、**認証付きで診断できないと分かった時点で run を停止する**（未認証で継続しない）。
