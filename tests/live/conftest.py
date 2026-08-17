@@ -20,6 +20,47 @@ def cookie_target():
 
 
 @pytest.fixture
+def own_target():
+    """A target on its OWN port, one per test.
+
+    The scope tests populate and delete ZAP's site tree, and several of the behaviours they
+    pin depend on what is already in it. A fresh port means a fresh site node, which isolates
+    them from each other without any test calling newSession — the plugin never calls it
+    either, and a test that did would wipe the session of whoever is running the daemon.
+    """
+    yield from start_target("target.py")
+
+
+@pytest.fixture
+def zap_mode():
+    """Restore ZAP's mode afterwards. It is global to the session, not per context."""
+    before = zap("core", "view", "mode").get("mode", "standard")
+    try:
+        yield lambda mode: zap("core", "action", "setMode", mode=mode)
+    finally:
+        zap("core", "action", "setMode", mode=before)
+
+
+@pytest.fixture
+def contexts():
+    """Hand out uniquely named contexts and remove every one of them afterwards."""
+    made = []
+
+    def new(suffix=""):
+        name = f"dast-live-{os.getpid()}-{int(time.time() * 1000) % 100000}{suffix}"
+        cid = zap("context", "action", "newContext", contextName=name)["contextId"]
+        made.append(name)
+        return name, cid
+
+    try:
+        yield new
+    finally:
+        zap("forcedUser", "action", "setForcedUserModeEnabled", boolean="false")
+        for name in made:
+            zap("context", "action", "removeContext", contextName=name)
+
+
+@pytest.fixture
 def zap_context():
     """A uniquely named ZAP context, torn down afterwards whatever the test did.
 

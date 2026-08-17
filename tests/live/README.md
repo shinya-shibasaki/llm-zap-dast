@@ -30,6 +30,18 @@ not the place for that. They do clean up after themselves — contexts and users
 `dast-live-<pid>-<ms>` prefix and are removed in teardown even when a test fails — but a
 scratch home makes the guarantee unnecessary.
 
+**A dedicated daemon, not one you are also using.** The scope suite changes state that is
+global to the ZAP session rather than scoped to a context: `core/action/setMode`, the
+`spider`/`ascan` exclusion lists, and the site tree itself. Each is restored or cleared in
+teardown, and each test gets its own target port so the site nodes cannot collide — but
+several of the behaviours being measured *depend on what is already in the tree*, so a daemon
+someone else is driving will produce results that are not about the code. Running these
+against a shared instance is how the site-tree order dependency below was first misread as
+test contamination.
+
+The tests never call `newSession`, on purpose: it would wipe the session of whoever owns the
+daemon. The plugin does not call it either, which is exactly why the order dependency matters.
+
 ## Two targets, because the defects differ by shape
 
 Both are started by the tests on a free port; you do not run them yourself.
@@ -57,7 +69,12 @@ unverified run now stops rather than degrading to anonymous, that is not lost co
 target that cannot be diagnosed at all.
 
 `harness.py` (ZAP plumbing, target startup) and `conftest.py` (fixtures) are shared by both
-suites so they cannot drift apart in how they configure ZAP.
+suites so they cannot drift apart in how they configure ZAP. `harness.include_regex()` returns
+the include shape `references/zap-integration.md` recommends, so no suite hardcodes its own —
+the scope tests that need a *different* shape build it locally, which is the point of them.
+
+`test_live_scope.py` covers the scope layer rather than authentication: Protected mode, how the
+Active Scan has to be seeded, and what an exclusion actually reaches.
 
 ## What each test pins
 
@@ -77,6 +94,22 @@ suites so they cannot drift apart in how they configure ZAP.
 | `test_a_redirect_into_logout_is_not_followed_and_the_session_survives` | `/expired` redirects into `/logout` the way a session app does. The walk refuses session-ending targets with or without `exclude.paths`; following one would destroy the session being verified, as the forced user. |
 | `test_a_session_page_verifies_and_reports_the_identity` | The healthy path on a session app, end to end. |
 | `test_mutual_identity_differential_between_two_accounts` | Two accounts must read back as two identities; crossed sessions void every horizontal-IDOR conclusion built on them. |
+
+### Scope, mode and exclusions (`test_live_scope.py`)
+
+| Test | The behaviour, and why it bites |
+| --- | --- |
+| `test_a_new_context_is_in_scope_by_default` | `inScope` is already `true`, which is why no step calls `setContextInScope`. If the default flips, every scanner starts refusing for a reason no step accounts for. |
+| `test_protect_mode_refuses_a_root_recursive_active_scan` | Protected mode (mandated) plus the recommended include (slash after the host) refuses `ascan` seeded at the root: recursion evaluates the *starting* node as the bare site node, which the regex deliberately does not match. This is why the Active Scan is launched against the context instead. |
+| `test_recurse_false_scans_only_the_seed_node` | The trap waiting for whoever meets that refusal. `recurse=false` clears it, runs to 100%, and attacks nothing below the root — a completed Active Scan that tested one page. |
+| `test_active_scan_needs_a_context_when_no_url_is_given` | Dropping the context as well is refused, so omitting `url` cannot silently widen into "scan the whole site tree". |
+| `test_the_context_form_honours_context_exclusions` | Dropping the url must not drop `exclude.paths` with it: the excluded endpoint takes no attacks, its neighbour does. |
+| `test_the_context_form_leaves_hosts_outside_the_context_alone` | A host in the site tree but outside the context stays untouched — the tree is the other half of the scope question. |
+| `test_the_crawlers_are_not_subject_to_the_root_recursion_rule` | Only the Active Scan needs the context form. Measured separately because step 3 reaches the root first: if the crawlers were affected, the first visible failure would be a spider, not a scan. |
+| `test_widening_the_include_after_the_tree_is_populated_is_not_recoverable` | Why the include regex was *not* widened instead. Widening works only before the target's site node exists; afterwards the refusal becomes `internal_error`, survives re-crawling and a fresh context, and clears only via `deleteSiteNode` — which needs the **bare** origin (a trailing slash answers OK and removes nothing). Both real shapes are covered: reusing a daemon for a second run, and `--from` re-entry. |
+| `test_access_url_reaches_an_out_of_context_host_in_any_mode` | `core/action/accessUrl` is bound by neither the mode (protect *and* safe) nor the context, while the spider is refused in the same breath. That path is what `test-authentication`, `verify-canary` and the step-6 probes use, so its boundary is the wrapper's `allowed_hosts` check and prompt discipline — nothing else. |
+| `test_an_excluded_url_gets_no_forced_user_credentials` | Excluding a URL also stops the forced user's credentials reaching it: 401, no `Authorization`, no login attempt, no error. Exclude the verification URL or a canary and the run ends in "cannot authenticate" with a perfectly correct configuration. |
+| `test_scanner_exclusions_are_session_scoped_and_ignore_context_name` | `spider`/`ascan` exclusions belong to the session, outlive the context, and leak into the daemon owner's ZAP where they quietly drop part of every later scan. `contextName` does not scope them — ZAP answers OK and ignores it. |
 
 ## After a ZAP upgrade
 

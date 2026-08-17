@@ -6,6 +6,7 @@ tests pin were invisible in one shape and fatal in the other.
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -62,6 +63,54 @@ def zap(component, kind, action, **params):
 def cfg_params(**kw):
     """ZAP's *ConfigParams: k=v pairs whose VALUES are individually URL-encoded."""
     return "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in kw.items())
+
+
+def include_regex(base_url):
+    """The include regex references/zap-integration.md recommends, for one host.
+
+    In one place so the suites cannot drift from the documented shape — and so the tests that
+    deliberately use a DIFFERENT shape have to say so locally, which is the point of those
+    tests. The mandatory `/` after the host is what pins the host boundary: it keeps
+    `localhost.example.com` out, and ZAP matches these patterns in full, not as a prefix.
+    """
+    host = re.escape(urllib.parse.urlparse(base_url).hostname or "")
+    return rf"^https?://{host}(:\d+)?/.*$"
+
+
+def spider_and_wait(url, context_name=None, limit=120):
+    """Launch the traditional spider and wait for it. Returns the scan id, or None.
+
+    The launch response key is `scan`, NOT `scanId` — reading the wrong one silently skips the
+    wait and lets a later assertion read counters while the crawl is still running.
+    """
+    kw = {"url": url}
+    if context_name:
+        kw["contextName"] = context_name
+    scan_id = zap("spider", "action", "scan", **kw).get("scan")
+    if scan_id is None:
+        return None
+    for _ in range(limit):
+        if zap("spider", "view", "status", scanId=scan_id).get("status") == "100":
+            break
+        time.sleep(0.5)
+    return scan_id
+
+
+def ascan_and_wait(limit=600, **params):
+    """Launch an active scan and wait for it. Returns (scan_id, refusal_code).
+
+    Exactly one of the two is None: ZAP answers a refusal with an error body rather than a
+    scan id, and both are results these tests assert on.
+    """
+    res = zap("ascan", "action", params.pop("_action", "scan"), **params)
+    scan_id = res.get("scan") or res.get("scanAsUser")
+    if scan_id is None:
+        return None, res.get("code", str(res)[:80])
+    for _ in range(limit):
+        if zap("ascan", "view", "status", scanId=scan_id).get("status") == "100":
+            break
+        time.sleep(0.5)
+    return scan_id, None
 
 
 def free_port():
