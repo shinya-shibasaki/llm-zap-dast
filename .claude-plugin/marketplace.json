@@ -5,14 +5,22 @@
     "name": "shinya-shibasaki",
     "email": "noreply@example.com"
   },
-  "description": "Claude Code 向けのセキュリティツール群。OWASP ZAP を用いた LLM 支援型グレーボックス DAST プラグイン llm-zap-dast を配布する。",
+  "description": "Claude Code 向けのセキュリティツール群。ソースコード診断（SAST）と OWASP ZAP を用いたグレーボックス DAST を1つのプラグインで提供する llm-zap-dast を配布する。",
   "plugins": [
     {
       "name": "llm-zap-dast",
       "source": "./plugins/llm-zap-dast",
-      "description": "ソースコード解析、OWASP ZAP、ブラウザ操作を組み合わせて、開発中の Web アプリケーションに対する DAST を支援する Claude Code プラグイン。",
+      "description": "ソースコード診断（OWASP ASVS 5.0 基準の SAST）と、OWASP ZAP・ブラウザ操作によるグレーボックス DAST の2つの Skill を提供する Claude Code プラグイン。",
       "category": "security",
-      "tags": ["dast", "security", "owasp-zap", "web", "playwright"]
+      "tags": [
+        "sast",
+        "dast",
+        "security",
+        "owasp-asvs",
+        "owasp-zap",
+        "semgrep",
+        "web"
+      ]
     }
   ]
 }
