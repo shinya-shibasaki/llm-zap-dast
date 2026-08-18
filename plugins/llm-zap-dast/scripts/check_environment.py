@@ -38,6 +38,28 @@ FIREFOX_INSTALL_HINT = (
 )
 
 
+SEMGREP_INSTALL_HINT = (
+    "pipx install semgrep   (or: python3 -m pip install --user semgrep, brew install semgrep)"
+)
+
+
+def detect_semgrep():
+    """Locate semgrep without running it.
+
+    Measured on 1.163.0: invoking `semgrep --version` writes an anonymous_user_id into
+    ~/.semgrep/settings.yml and calls semgrep.dev for a version check. The SAST skill
+    promises not to talk to the network outside rule fetching, so an environment check must
+    not be the thing that breaks that promise. which() answers the only question step 0 asks.
+
+    semgrep is also commonly installed as a standalone CLI (pipx, uv tool), where it is not
+    importable from any interpreter — so this cannot reuse the Playwright import probe.
+    """
+    path = shutil.which("semgrep")
+    if path:
+        return "ok", f"found at {path} (version not probed: that call goes to the network)"
+    return "fail", "semgrep not found on PATH. Install: " + SEMGREP_INSTALL_HINT
+
+
 def _load_cfg(path):
     try:
         import yaml
@@ -260,8 +282,17 @@ def detect_firefox():
     return "ok", f"{found} — {version} (geckodriver ships with ZAP's webdriverlinux add-on)"
 
 
-def run_checks(cfg, config_path):
+def run_checks(cfg, config_path, profile="dast"):
+    """Environment checks for one skill.
+
+    profile='dast' keeps the original set. profile='sast' does not merely skip the ZAP and
+    browser checks — it never reaches them, because the SAST skill must not open a network
+    connection and must not hand the user install hints for tools its run has no use for.
+    Relying on "sast.yaml happens to have no base_url, so nothing is sent" would make that a
+    coincidence rather than a property.
+    """
     checks = []
+    sast = profile == "sast"
 
     # Python version
     ok_py = sys.version_info[:2] >= MIN_PY
@@ -290,6 +321,28 @@ def run_checks(cfg, config_path):
         "config_file", "ok" if os.path.isfile(config_path) else "warn",
         f"{config_path} {'exists' if os.path.isfile(config_path) else 'missing (defaults will be assumed)'}",
     ))
+
+    if sast:
+        # semgrep is a prerequisite, not a capability: measured on 1.163.0, rules are not
+        # cached, so without it (or without the network to fetch rules) not a single rule
+        # runs. A report produced anyway would look the same as a real one, which is the
+        # silent false negative the stop rule exists to prevent.
+        required = _get(cfg or {}, "tools", "semgrep", "required", default=True)
+        status, detail = detect_semgrep()
+        if status == "fail" and required is False:
+            status = "warn"
+            detail += " | tools.semgrep.required is false, so the run may continue without it"
+        checks.append(_check("semgrep", status, detail))
+
+        out_dir = _get(cfg or {}, "output", "directory", default="reports/sast")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=out_dir, delete=True):
+                pass
+            checks.append(_check("output_writable", "ok", f"{out_dir} is writable"))
+        except Exception as exc:  # noqa: BLE001
+            checks.append(_check("output_writable", "fail", f"{out_dir}: {exc}"))
+        return checks
 
     base_url = _get(cfg or {}, "target", "base_url")
     zap_api_url = _get(cfg or {}, "zap", "api_url")
@@ -385,12 +438,17 @@ def run_checks(cfg, config_path):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Check llm-zap-dast environment")
-    parser.add_argument("--config", default="dast.yaml")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--profile", choices=("dast", "sast"), default="dast",
+                        help="which skill's prerequisites to check (default: dast)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.config is None:
+        args.config = "sast.yaml" if args.profile == "sast" else "dast.yaml"
+
     cfg, load_err = _load_cfg(args.config)
-    checks = run_checks(cfg or {}, args.config)
+    checks = run_checks(cfg or {}, args.config, profile=args.profile)
     if load_err:
         checks.insert(0, _check("config_load", "warn", load_err))
 
@@ -398,6 +456,7 @@ def main(argv=None) -> int:
     has_security_warn = any(c["name"] == "zap_bind_scope" and c["status"] == "warn" for c in checks)
     result = {
         "ok": not (has_fail or has_security_warn),
+        "profile": args.profile,
         "config": args.config,
         "checks": checks,
     }
@@ -405,7 +464,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"Environment check ({args.config}):")
+        print(f"Environment check ({args.profile}, {args.config}):")
         symbol = {"ok": "OK  ", "warn": "WARN", "fail": "FAIL", "skip": "skip", "unknown": "?   "}
         for c in checks:
             print(f"  [{symbol.get(c['status'], c['status'])}] {c['name']}: {c['detail']}")

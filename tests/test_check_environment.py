@@ -178,3 +178,64 @@ def test_zap_api_key_never_reaches_the_check_output(monkeypatch, tmp_path):
 def test_scrub_secret_is_a_noop_without_a_key():
     assert check_environment._scrub_secret("plain text", "") == "plain text"
     assert check_environment._scrub_secret("plain text", None) == "plain text"
+
+
+# --- SAST profile ---------------------------------------------------------------
+# The SAST skill must not open a network connection, so its profile does not merely skip the
+# ZAP and browser checks — it never reaches them. "sast.yaml happens to have no base_url" is
+# a coincidence, not a property.
+
+def test_sast_profile_runs_no_network_or_browser_checks(monkeypatch, tmp_path):
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: "/usr/bin/semgrep")
+    cfg = {"output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "sast.yaml", profile="sast")
+    names = {c["name"] for c in checks}
+    for absent in ("target_reachable", "zap_reachable", "zap_autostart", "zap_api_key_env",
+                   "browser_firefox", "playwright", "zap_bind_scope"):
+        assert absent not in names, f"{absent} must not run under the sast profile"
+    assert {"python_version", "git_repo", "config_file", "semgrep", "output_writable"} <= names
+
+
+def test_semgrep_missing_fails_the_sast_profile(monkeypatch, tmp_path):
+    """Measured on 1.163.0: rules are not cached, so without semgrep not a single rule runs.
+    A report produced anyway would be indistinguishable from a real one."""
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: None)
+    cfg = {"output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "sast.yaml", profile="sast")
+    semgrep = _by_name(checks, "semgrep")
+    assert semgrep["status"] == "fail"
+    assert "pipx install semgrep" in semgrep["detail"]
+    # No curl-piped-to-shell install advice: the stop message is read as a how-to.
+    assert "curl" not in semgrep["detail"] and "| sh" not in semgrep["detail"]
+
+
+def test_semgrep_missing_only_warns_when_the_config_opted_out(monkeypatch, tmp_path):
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: None)
+    cfg = {"tools": {"semgrep": {"required": False}},
+           "output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "sast.yaml", profile="sast")
+    assert _by_name(checks, "semgrep")["status"] == "warn"
+
+
+def test_missing_semgrep_does_not_break_the_dast_profile(monkeypatch, tmp_path):
+    """The DAST step 0 treats a 'fail' as a hard stop (exit 1). semgrep is no prerequisite of
+    a DAST run, so it must not appear on that side at all."""
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: None)
+    cfg = {"output": {"directory": str(tmp_path / "out")}}
+    checks = check_environment.run_checks(cfg, "dast.yaml")
+    assert _by_name(checks, "semgrep") is None
+    assert not any(c["status"] == "fail" for c in checks), checks
+
+
+def test_semgrep_detection_never_executes_semgrep(monkeypatch):
+    """`semgrep --version` writes an anonymous_user_id and calls semgrep.dev (measured on
+    1.163.0). An environment check must not be what breaks the no-network promise."""
+    monkeypatch.setattr(check_environment.shutil, "which", lambda n: "/usr/bin/semgrep")
+
+    def _forbidden(*a, **k):
+        raise AssertionError("detect_semgrep must not run a subprocess")
+
+    monkeypatch.setattr(check_environment.subprocess, "run", _forbidden)
+    status, detail = check_environment.detect_semgrep()
+    assert status == "ok"
+    assert "/usr/bin/semgrep" in detail

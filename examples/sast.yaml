@@ -1,0 +1,59 @@
+# sast.yaml — SAST スキル（/llm-zap-dast:sast）の設定例
+#
+# 全てのキーが任意です。ファイルが無くても既定値で動きます（工程0の profiling が対象を下見して
+# 埋めるため）。ここに書くのは「対象・環境ごとに変わる事実」だけで、診断の方法論
+# （ASVS のレベル方針、独立3回、ジェネラリスト方式）は skills/sast/references/ が正典です。
+
+target:
+  # 診断対象ディレクトリ。既定はこのファイルのあるディレクトリ。
+  # リポジトリの外を指すと既定でエラーになります（下の safety.allow_outside_repo）。
+  source_dir: ./
+
+  # auto | web | api | graphql | cli | library | batch | mobile | desktop | infra
+  # auto なら profiling が判定します。該当する ASVS 章と再現手順の様式が変わります。
+  app_kind: auto
+
+safety:
+  # 読み取り境界。既定 false ＝ git work tree の内側しか読みません。
+  # 打ち間違い（例：source_dir: ~）でホーム全体を読んでレポートに抜粋が載る事故を構造的に防ぎます。
+  # 他リポジトリを監査する等で意図的に外へ出すときだけ true にしてください。
+  # なお .git/ は設定に関わらず常に除外します（削除済みの秘密がコミット履歴に残るため）。
+  allow_outside_repo: false
+
+standard:
+  # 省略時は同梱の OWASP ASVS 5.0（plugins/llm-zap-dast/standards/）を使います。
+  # 別版を使いたいときだけ CSV のパスを書いてください。
+  # asvs_csv: ./OWASP_Application_Security_Verification_Standard_5.0.0_en.csv
+
+tools:
+  semgrep:
+    # 既定 true。semgrep が使えない／ルールを取得できない場合は run を停止します
+    # （実測：ルールはキャッシュされないため、取得できないと1件も走らない）。
+    # false にすると LLM 精読のみで続行しますが、全レポートの冒頭に「SAST 未実行」を明記します。
+    required: true
+
+    # 省略時は profiling が検出した言語から固定パックを選びます。
+    # 明示するとその内容で固定されます（再現性のため推奨）。
+    # 'auto' は指定できません（semgrep の --config auto はサーバ側がルールを選ぶので、
+    #  同じコードでも結果が経時変化し、独立3回が同じ分母を見なくなります）。
+    # configs:
+    #   - p/javascript
+    #   - p/typescript
+    #   - p/security-audit
+
+analysis:
+  # 追加の除外。既定は空で十分です——semgrep は git 管理下のファイルだけを走査し、
+  # .semgrepignore の既定で node_modules / build 等は既に除外されます
+  # （実測：juice-shop で 155 ファイルが自動 skip）。
+  # exclude:
+  #   - vendor/
+
+agents:
+  # 各サブエージェント（プロファイル／攻撃マップ／クリティック／独立3回）に指定するモデル。
+  # 独立3回＋統合という設計は、各回が十分な推論をすることを前提にしています。
+  model: opus
+
+output:
+  # 成果物は reports/sast/<run-id>/ 配下に出ます（attack-map.md、report-01〜04.md、run.log）。
+  # ここは常に解析対象から除外されます（前回のレポートを次回が読む自己汚染を防ぐため）。
+  directory: reports/sast

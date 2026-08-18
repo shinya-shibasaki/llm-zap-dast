@@ -66,8 +66,8 @@ def test_references_and_templates_present():
 
 def test_scripts_present():
     scripts = os.path.join(PLUGIN_DIR, "scripts")
-    for name in ("check_environment.py", "validate_config.py", "redact.py", "zap_control.py",
-                 "zap_auth.py"):
+    for name in ("check_environment.py", "validate_config.py", "validate_sast_config.py",
+                 "redact.py", "zap_control.py", "zap_auth.py"):
         assert os.path.isfile(os.path.join(scripts, name)), f"missing script {name}"
 
 
