@@ -6,14 +6,17 @@
 
 ## このリポジトリは何か
 
-OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレーボックス DAST** を行う Claude Code
-プラグインを開発・配布するリポジトリ。プラグイン本体は `plugins/llm-zap-dast/`
-（マニフェストは `.claude-plugin/`、配布カタログは直下の `.claude-plugin/marketplace.json`）。
+LLM 支援型のセキュリティ診断を行う Claude Code プラグインを開発・配布するリポジトリ。Skill は2本：
+**`dast`**（OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作でグレーボックス DAST）と
+**`sast`**（OWASP ASVS 5.0 基準・攻撃マップを分母にした静的診断。semgrep ＋ LLM 精読、独立3回＋統合）。
+プラグイン本体は `plugins/llm-zap-dast/`（マニフェストは `.claude-plugin/`、配布カタログは直下の
+`.claude-plugin/marketplace.json`）。**プラグイン名が `llm-zap-dast` なのは歴史的経緯**で、改名は
+既存利用者の入れ直しを強いるため据え置いている。
 
 ## ディレクトリ地図と「正典 / 非正典」
 
-- **正典（挙動の真実はここ）**：`plugins/llm-zap-dast/skills/dast/` 配下 ——
-  `SKILL.md`（工程フロー）／`references/`（詳細9本）／`templates/`。
+- **正典（挙動の真実はここ）**：`plugins/llm-zap-dast/skills/<dast|sast>/` 配下 ——
+  `SKILL.md`（工程フロー）／`references/`（dast は詳細9本、sast は6本）／`templates/`。
   ＋ `plugins/llm-zap-dast/references/`（全スキル共通の安全則）、`plugins/llm-zap-dast/scripts/`、
   `plugins/llm-zap-dast/standards/`（同梱の OWASP ASVS 5.0。ライセンスは `NOTICE`）、`tests/`。
 - **利用者向けミラー**：`README.md`（挙動を変えたらここも同期する。下記）。
@@ -26,7 +29,14 @@ OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレー
 ## 編集の分担（3レイヤ）
 
 - **`SKILL.md` はフロー制御に徹する。** 大きな手順を展開しない。新しい詳細手順は `references/` に
-  置き、SKILL からリンクする（SKILL 冒頭の設計宣言）。
+  置き、SKILL からリンクする（SKILL 冒頭の設計宣言）。**SKILL.md に安全則を書かない**（上記2層）。
+- **SAST の方法論は設定に出さない。** 独立3回・ジェネラリスト方式・ASVS のレベル方針は
+  `skills/sast/references/` が正典。「対象・環境ごとに変わる事実」だけを `sast.yaml` に置く。
+  改修時はまず「これは対象ごとに変わる事実か、方法論か」を判定し、方法論なら設定項目を増やして
+  回避しない。
+- **SAST はサブエージェントに委譲する構成。** 実際に対象を読むのは子なので、**安全則を子へ届ける
+  経路を壊さない**——`skills/sast/references/safety-policy.md` 冒頭の逐語「サブエージェント契約」
+  ブロックと、各 reference 冒頭の「先に安全則を全文読め」の二重化がそれ。テストで守っている。
 - **`references/` が詳細の置き場**。トピックごとに権威ファイルを1つに保ち、内容を他所へコピーしない
   （二重管理は stale の元）。
 - **`scripts/` は薄いラッパ。** 判断は LLM、スクリプトは ZAP API への反映のみ。**対象固有のログイン
@@ -67,8 +77,14 @@ references に書く。検証は形の違う対象を2つ以上で行う（ト�
 ## 実行環境の前提
 
 - スクリプト参照は必ず **`${CLAUDE_PLUGIN_ROOT}/scripts/`** 経由、パスをハードコードしない。`python3` で実行。
-- **サードパーティ依存は pyyaml / requests / playwright のみ**（requests 無しは urllib フォールバック）。
-  新たな依存を足さない。
+- **Python の import 依存は pyyaml / requests / playwright のみ**（requests 無しは urllib
+  フォールバック）。新たな import 依存を足さない。
+- **外部 CLI ツールは semgrep のみ**（SAST 専用）。ZAP と Firefox は DAST の実行環境であって Python
+  依存ではない。**新たな外部ツールを足さない**——特に SCA 系（`npm audit`／`pip-audit`／`osv-scanner`）は
+  依存解決で任意コード実行を起こしうるので、SAST の「実行しない」境界の外側。
+- **semgrep の挙動も実測してから書く。** 通信・出力・走査範囲は 2026-08-19 に 1.163.0 で実測済み
+  （ZAP をプロキシに立てて観測）。結果は `skills/sast/references/safety-policy.md` §3 と
+  `profiling.md` に集約。推測で書き換えない。
 
 ## README との同期
 

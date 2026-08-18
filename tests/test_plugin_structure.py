@@ -71,25 +71,79 @@ def test_scripts_present():
         assert os.path.isfile(os.path.join(scripts, name)), f"missing script {name}"
 
 
-def test_every_reference_and_template_is_linked_from_the_skill():
+def _skill_names():
+    skills_dir = os.path.join(PLUGIN_DIR, "skills")
+    return sorted(n for n in os.listdir(skills_dir)
+                  if os.path.isfile(os.path.join(skills_dir, n, "SKILL.md")))
+
+
+def test_both_skills_are_present():
+    assert set(_skill_names()) == {"dast", "sast"}, _skill_names()
+
+
+def test_every_skill_is_manual_only():
+    """Both skills are expensive and consequential — DAST sends attacks, SAST fans out to
+    six subagents. Neither may start because a prompt sounded related.
+    """
+    for skill in _skill_names():
+        with open(os.path.join(PLUGIN_DIR, "skills", skill, "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        assert text.startswith("---"), f"skills/{skill}/SKILL.md needs YAML frontmatter"
+        front = text.split("---", 2)[1]
+        assert "disable-model-invocation: true" in front, f"{skill}: manual-only required"
+        assert "description:" in front, f"{skill}: description required"
+        assert f"name: {skill}" in front, f"{skill}: frontmatter name must match the directory"
+
+
+def test_every_reference_and_template_is_linked_from_its_skill():
     """A file nothing points at is a file the run never opens.
 
     SKILL.md is the flow controller and reaches the detail through links; references link
     each other. authentication.example.md was reachable from nothing at all.
     """
-    skill_dir = os.path.join(PLUGIN_DIR, "skills", "dast")
-    corpus = ""
-    for sub in ("", "references", "templates"):
-        d = os.path.join(skill_dir, sub)
-        for name in os.listdir(d):
-            if name.endswith(".md"):
-                with open(os.path.join(d, name), encoding="utf-8") as fh:
-                    corpus += fh.read()
-    for sub in ("references", "templates"):
-        for name in sorted(os.listdir(os.path.join(skill_dir, sub))):
-            if not name.endswith((".md", ".yaml")):
+    for skill in _skill_names():
+        skill_dir = os.path.join(PLUGIN_DIR, "skills", skill)
+        corpus = ""
+        for sub in ("", "references", "templates"):
+            d = os.path.join(skill_dir, sub)
+            if not os.path.isdir(d):
                 continue
-            assert name in corpus, f"{sub}/{name} is referenced by no other file"
+            for name in os.listdir(d):
+                if name.endswith(".md"):
+                    with open(os.path.join(d, name), encoding="utf-8") as fh:
+                        corpus += fh.read()
+        for sub in ("references", "templates"):
+            d = os.path.join(skill_dir, sub)
+            if not os.path.isdir(d):
+                continue
+            for name in sorted(os.listdir(d)):
+                if not name.endswith((".md", ".yaml")):
+                    continue
+                assert name in corpus, f"{skill}/{sub}/{name} is referenced by no other file"
+
+
+def test_sast_references_present():
+    ref = os.path.join(PLUGIN_DIR, "skills", "sast", "references")
+    for name in ("safety-policy.md", "profiling.md", "attack-map.md", "method.md",
+                 "severity-cvss.md", "report-format.md"):
+        assert os.path.isfile(os.path.join(ref, name)), f"missing sast reference {name}"
+    tpl = os.path.join(PLUGIN_DIR, "skills", "sast", "templates")
+    assert os.path.isfile(os.path.join(tpl, "report.example.md"))
+
+
+def test_subagent_contract_is_reachable_by_the_files_subagents_read():
+    """The safety rules live with the parent, but the child is what reads the target. Each
+    reference a subagent opens has to point back at them, so a parent that forgets to paste
+    the contract is not the only thing standing between the target and an unguarded agent.
+    """
+    ref = os.path.join(PLUGIN_DIR, "skills", "sast", "references")
+    with open(os.path.join(ref, "safety-policy.md"), encoding="utf-8") as fh:
+        assert "サブエージェント契約" in fh.read(), "verbatim contract block is missing"
+    for name in ("profiling.md", "attack-map.md", "method.md"):
+        with open(os.path.join(ref, name), encoding="utf-8") as fh:
+            text = fh.read()
+        assert "safety-core.md" in text and "safety-policy.md" in text, (
+            f"{name} is read by a subagent and must send it to both safety layers first")
 
 
 def test_bundled_asvs_standard_is_the_unmodified_upstream_file():
