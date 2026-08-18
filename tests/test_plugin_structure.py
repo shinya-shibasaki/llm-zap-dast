@@ -92,6 +92,40 @@ def test_every_reference_and_template_is_linked_from_the_skill():
             assert name in corpus, f"{sub}/{name} is referenced by no other file"
 
 
+def test_bundled_asvs_standard_is_the_unmodified_upstream_file():
+    """The SAST skill transcribes requirement IDs and wording from this CSV rather than from
+    memory, so a truncated or edited copy would silently corrupt every report. The digest is
+    the upstream v5.0.0 file; NOTICE states the same value as the provenance claim, and the
+    two must not drift apart.
+    """
+    import hashlib
+
+    csv = os.path.join(PLUGIN_DIR, "standards",
+                       "OWASP_Application_Security_Verification_Standard_5.0.0_en.csv")
+    assert os.path.isfile(csv), "bundled ASVS 5.0 CSV is missing"
+    with open(csv, "rb") as fh:
+        digest = hashlib.md5(fh.read()).hexdigest()
+    assert digest == "a4f93cd757d92095b2dc3b068fb50ce4", (
+        "bundled ASVS CSV no longer matches the upstream v5.0.0 file; if this is an "
+        "intentional update, refresh NOTICE (provenance, digest, size) in the same commit"
+    )
+    with open(os.path.join(PLUGIN_DIR, "NOTICE"), encoding="utf-8") as fh:
+        notice = fh.read()
+    assert digest in notice, "NOTICE must record the digest it claims provenance for"
+
+
+def test_third_party_licensing_files_ship_with_the_plugin():
+    """The plugin directory is what gets distributed; the repo-root LICENSE does not travel
+    with it. CC BY-SA 4.0 content (the ASVS CSV) requires attribution to reach the recipient.
+    """
+    for name in ("LICENSE", "NOTICE"):
+        assert os.path.isfile(os.path.join(PLUGIN_DIR, name)), f"missing {name} in the plugin"
+    with open(os.path.join(PLUGIN_DIR, "NOTICE"), encoding="utf-8") as fh:
+        notice = fh.read()
+    assert "CC BY-SA 4.0" in notice, "NOTICE must name the ASVS license"
+    assert "OWASP" in notice, "NOTICE must attribute OWASP"
+
+
 def test_manifests_not_holding_extra_dirs():
     # .claude-plugin must contain only the manifest, not skills/scripts.
     cp = os.path.join(PLUGIN_DIR, ".claude-plugin")

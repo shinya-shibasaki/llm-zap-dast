@@ -1,0 +1,40 @@
+llm-zap-dast
+Copyright (c) 2026 shinya-shibasaki
+
+このプラグイン本体は MIT License で配布されます（同梱の LICENSE を参照）。
+配布物には、別ライセンスのサードパーティ著作物が1点含まれています。以下に出所と条件を示します。
+
+--------------------------------------------------------------------------------
+OWASP Application Security Verification Standard (ASVS) 5.0.0
+--------------------------------------------------------------------------------
+
+ファイル:
+  standards/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv
+
+著作権:
+  Copyright (c) The OWASP Foundation
+
+ライセンス:
+  Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+  https://creativecommons.org/licenses/by-sa/4.0/
+
+出所:
+  https://github.com/OWASP/ASVS
+  取得元 https://raw.githubusercontent.com/OWASP/ASVS/v5.0.0/5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv
+  タグ v5.0.0（ASVS 5.0.0、2025年5月リリース）
+
+改変の有無:
+  **改変していません。** 上流の配布物をそのまま同梱しています。
+  検証: md5 = a4f93cd757d92095b2dc3b068fb50ce4 / 105,100 バイト / 347 行
+  （2026-08-19 に上流から取得し、バイト単位で一致することを確認）
+
+同梱している理由:
+  SAST スキル（skills/sast）は ASVS 5.0 を唯一の基準とし、要件IDと文言を記憶に頼らず必ずこの CSV から
+  転記します。CSV が無いと診断そのものが成立しないため、利用者が別途用意しなくてよいように同梱しています。
+
+CC BY-SA 4.0 について（利用者向けの注意）:
+  この CSV は MIT ではなく CC BY-SA 4.0 です。CSV そのもの、またはその改変物を再配布する場合は、
+  上記の帰属表示を保ち、同じ CC BY-SA 4.0 で配布する必要があります（ShareAlike）。
+  プラグイン本体のコードは MIT のままで、この条件は CSV とその派生物にのみ及びます。
+  なお、SAST スキルが生成する診断レポートは ASVS の要件IDと文言を引用するため、レポートを配布する
+  場合は同様に OWASP ASVS への帰属表示を添えてください。
