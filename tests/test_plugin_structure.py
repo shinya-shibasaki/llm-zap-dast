@@ -131,3 +131,33 @@ def test_manifests_not_holding_extra_dirs():
     cp = os.path.join(PLUGIN_DIR, ".claude-plugin")
     entries = set(os.listdir(cp))
     assert entries == {"plugin.json"}, f"unexpected entries in .claude-plugin: {entries}"
+
+
+def test_shared_safety_core_exists_and_is_read_by_every_skill():
+    """The safety authority is two layers. A skill that only reads its own safety-policy.md
+    would silently miss the common rules — which is exactly how a split authority fails.
+    """
+    core = os.path.join(PLUGIN_DIR, "references", "safety-core.md")
+    assert os.path.isfile(core), "shared references/safety-core.md is missing"
+
+    skills_dir = os.path.join(PLUGIN_DIR, "skills")
+    for skill in sorted(os.listdir(skills_dir)):
+        skill_md = os.path.join(skills_dir, skill, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8") as fh:
+            text = fh.read()
+        assert "safety-core.md" in text, f"skills/{skill}/SKILL.md must read safety-core.md"
+        assert "safety-policy.md" in text, (
+            f"skills/{skill}/SKILL.md must read its own safety-policy.md")
+
+
+def test_safety_core_does_not_duplicate_the_dast_specific_axes():
+    """Common layer holds what applies to both skills. The 8A/8B/8C destruction axes are a
+    DAST concept; copying them up would put the same rule in two authorities.
+    """
+    with open(os.path.join(PLUGIN_DIR, "references", "safety-core.md"), encoding="utf-8") as fh:
+        core = fh.read()
+    for dast_only in ("allowed_hosts", "8A", "8B", "8C", "Active Scan"):
+        assert dast_only not in core, (
+            f"{dast_only!r} is DAST-specific and belongs in skills/dast/references/safety-policy.md")

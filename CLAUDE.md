@@ -13,8 +13,9 @@ OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレー
 ## ディレクトリ地図と「正典 / 非正典」
 
 - **正典（挙動の真実はここ）**：`plugins/llm-zap-dast/skills/dast/` 配下 ——
-  `SKILL.md`（工程フロー）／`references/`（詳細9本）／`scripts/`（Python）／`templates/`。
-  ＋ `plugins/llm-zap-dast/scripts/` と `tests/`。
+  `SKILL.md`（工程フロー）／`references/`（詳細9本）／`templates/`。
+  ＋ `plugins/llm-zap-dast/references/`（全スキル共通の安全則）、`plugins/llm-zap-dast/scripts/`、
+  `plugins/llm-zap-dast/standards/`（同梱の OWASP ASVS 5.0。ライセンスは `NOTICE`）、`tests/`。
 - **利用者向けミラー**：`README.md`（挙動を変えたらここも同期する。下記）。
 - **非正典（歴史的な作業メモ。仕様として扱わない）**：リポジトリ直下の
   `llm-zap-dast-implementation-instructions.md` / `llm-zap-dast-v2-auth-plan.md` /
@@ -33,8 +34,14 @@ OWASP ZAP ＋ ソース解析 ＋ ブラウザ操作で **LLM 支援型グレー
 
 ## 壊してはいけない不変条件（緩める改修をしない）
 
-- **安全の権威は `references/safety-policy.md`。** 破壊の3軸（8A 対象内部 / 8B 可用性 / 8C 外部副作用）
-  と「停止 vs fail-soft スキップ」の線引きはここが正。**安全ゲートを緩める/迂回する改修はしない。**
+- **安全の権威は2層。** 共通＝`plugins/llm-zap-dast/references/safety-core.md`、スキル固有＝
+  `skills/*/references/safety-policy.md`。**新しい安全事項は必ずどちらかに置き、帰属が曖昧なものは
+  既定で共通側**（分担形の失敗モードは「どちらの担当でもないと双方が思う」こと）。**SKILL.md に安全則を
+  書かない。** 各 SKILL.md は「共通 → 自スキル固有」の順で全文読ませる。
+- **「停止 vs fail-soft スキップ」の線引きは `safety-core.md` が正**——設定が明示的に約束した結果の
+  クラスが成立しないなら停止（認証・semgrep）、カバレッジが減るだけなら記録して続行（Firefox・Playwright）。
+- **DAST 固有の安全は `skills/dast/references/safety-policy.md`。** 破壊の3軸（8A 対象内部 / 8B 可用性 /
+  8C 外部副作用）はここが正。**安全ゲートを緩める/迂回する改修はしない**（これは両層に等しく掛かる）。
 - **認証は「できなければ停止」。** `authentication.enabled: true` は認証付きで診断する約束。認証できない
   と分かったら未認証へ degrade せず run を停止（`references/authentication.md`・`safety-policy.md`）。
 - **秘匿情報を出力に出さない。** 資格情報は環境変数「名」からのみ読み値を印字しない、`clear-authentication`

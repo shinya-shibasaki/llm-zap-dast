@@ -11,8 +11,12 @@ disable-model-invocation: true
 ファイル**です。詳細な手順は `references/` に、機械的な処理は `scripts/` にあります。大きな手順を
 ここに展開せず、各ステップに達したら該当ファイルを読んでください。
 
-**何かを始める前に、まず `references/safety-policy.md` を全文読むこと。** 安全と進行が衝突した
-場合は、常にこのファイルが優先されます。安全が勝ちます。
+**何かを始める前に、次の2つを全文読むこと。** 安全の権威は2層です。
+1. `${CLAUDE_PLUGIN_ROOT}/references/safety-core.md` — 全スキル共通の安全則
+2. `references/safety-policy.md` — DAST 固有の安全則
+
+安全と進行が衝突した場合は、常にこの2つが優先されます。安全が勝ちます。
+**サブエージェントに作業を委譲する場合は、そのプロンプトでも同じ2つを読ませること**（共通則 §6）。
 
 `${CLAUDE_PLUGIN_ROOT}` はプラグインのルートです。スクリプトは
 `${CLAUDE_PLUGIN_ROOT}/scripts/` にあります。`python3` で実行してください。
