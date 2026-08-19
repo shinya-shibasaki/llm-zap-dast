@@ -16,7 +16,7 @@ LLM 支援型のセキュリティ診断を行う Claude Code プラグインを
 ## ディレクトリ地図と「正典 / 非正典」
 
 - **正典（挙動の真実はここ）**：`plugins/llm-zap-dast/skills/<dast|sast>/` 配下 ——
-  `SKILL.md`（工程フロー）／`references/`（dast は詳細9本、sast は6本）／`templates/`。
+  `SKILL.md`（工程フロー）／`references/`（dast は詳細9本、sast は7本）／`templates/`。
   ＋ `plugins/llm-zap-dast/references/`（全スキル共通の安全則）、`plugins/llm-zap-dast/scripts/`、
   `plugins/llm-zap-dast/standards/`（同梱の OWASP ASVS 5.0。ライセンスは `NOTICE`）、`tests/`。
 - **利用者向けミラー**：`README.md`（挙動を変えたらここも同期する。下記）。

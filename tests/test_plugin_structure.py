@@ -125,7 +125,7 @@ def test_every_reference_and_template_is_linked_from_its_skill():
 def test_sast_references_present():
     ref = os.path.join(PLUGIN_DIR, "skills", "sast", "references")
     for name in ("safety-policy.md", "profiling.md", "attack-map.md", "method.md",
-                 "severity-cvss.md", "report-format.md"):
+                 "severity-cvss.md", "report-format.md", "config-init.md"):
         assert os.path.isfile(os.path.join(ref, name)), f"missing sast reference {name}"
     tpl = os.path.join(PLUGIN_DIR, "skills", "sast", "templates")
     assert os.path.isfile(os.path.join(tpl, "report.example.md"))
@@ -215,3 +215,15 @@ def test_safety_core_does_not_duplicate_the_dast_specific_axes():
     for dast_only in ("allowed_hosts", "8A", "8B", "8C", "Active Scan"):
         assert dast_only not in core, (
             f"{dast_only!r} is DAST-specific and belongs in skills/dast/references/safety-policy.md")
+
+
+def test_sast_init_does_not_pin_the_semgrep_packs():
+    """--init records what is in effect; it must not freeze the rule selection. Packs are
+    chosen per run from the detected languages, so a pinned list would outlive the language
+    mix it was derived from — and the run would keep scanning with a stale selection.
+    """
+    with open(os.path.join(PLUGIN_DIR, "skills", "sast", "references", "config-init.md"),
+              encoding="utf-8") as fh:
+        doc = fh.read()
+    assert "固定しない" in doc, "config-init.md must say the packs stay unpinned"
+    assert "# configs:" in doc, "the generated file must leave configs commented out"
