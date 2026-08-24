@@ -85,9 +85,13 @@ disable-model-invocation: true
 ## 実行準備（工程0の作業の前に）
 
 1. `run-id` を決定：`YYYYMMDD-HHMMSS-<6桁hex>`（`date` ＋短い乱数/ハッシュ。DAST 側と同一形式）。
-2. 設定の `output.directory`（既定 `reports/sast`）から出力先を決定し、`reports/sast/<run-id>/` を
-   作成する。あわせて `reports/sast/latest.json` に `{"run_id": …, "path": …}` を書く
-   （**シンボリックリンクは使わない** — WSL から Windows 側ドライブ配下では作成に失敗しうる）。
+2. 設定の `output.directory`（既定 `reports/sast`）から出力先を決定し、
+   `<output.directory>/<run-id>/` を作成する。あわせて **`<output.directory>/latest.json`** に
+   `{"run_id": …, "path": …}` を書く（`path` はリポジトリ相対。
+   **シンボリックリンクは使わない** — WSL から Windows 側ドライブ配下では作成に失敗しうる）。
+   **`latest.json` は run の開始時に書かれる**ので「最新に*完了した* run」ではなく
+   「最新に*開始した* run」を指す。完了マーカーは書かない（読む側はこれを前提にする。
+   DAST 連携では `skills/dast/references/safety-policy.md` が扱いを決めている）。
 3. その中に `run.log` を開始する。実行したコマンド／採用した方法／**その理由**、サブエージェントに
    渡した安全則、を記録する。**semgrep の stdout を貼らない**（コマンド行と件数のみ）。
 4. 成果物を書き出す前に、`.gitignore` チェックを行う（共通則 §4。`reports/` と `.env` が無視対象か。
