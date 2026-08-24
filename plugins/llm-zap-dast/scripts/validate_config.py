@@ -95,6 +95,68 @@ def _covered_by_excludes(path, exclude_paths) -> str | None:
     return None
 
 
+def _repo_relative_error(value: str) -> str | None:
+    """Return why `value` is not a safe repo-relative path, or None if it is fine.
+
+    The SAST artefacts are read from inside the repository the DAST run is scanning. A path
+    that is absolute, a URL, or that climbs out with `..` would let the run read another
+    target's results (or anything on disk) while still looking like a normal config. This is
+    a form check only — whether the directory exists is decided at run time (step 0).
+    """
+    v = str(value).strip()
+    if not v:
+        return "is empty; give a run directory such as reports/sast/<run-id>"
+    if "://" in v:
+        return "looks like a URL; use a path inside the repository"
+    if v.startswith("/") or v.startswith("\\\\"):
+        return "is an absolute path; use a path relative to the repository root"
+    if len(v) > 1 and v[1] == ":":
+        return "is an absolute (drive-qualified) path; use a repository-relative path"
+    # `~/...` and `$VAR/...` are absolute once anything expands them, and expansion happens
+    # outside this function (a shell, or os.path.expanduser). Refusing the literal form is the
+    # only place the check can still bite.
+    if v.startswith("~"):
+        return "starts with '~'; it expands to an absolute path outside the repository"
+    if "$" in v or "%" in v:
+        return "contains a variable reference; give a literal repository-relative path"
+    parts = [seg for seg in v.replace("\\", "/").split("/") if seg not in ("", ".")]
+    if ".." in parts:
+        return "contains '..'; the path must stay inside the repository"
+    if not parts:
+        return "does not name a run directory (it resolves to the repository root)"
+    return None
+
+
+def _sast_pointer_error(base_dir: str) -> str | None:
+    """Check reports/sast/latest.json, the pointer `sast.report: latest` resolves through.
+
+    The pointer lives inside the target repository, so its contents are target-side data
+    (safety-core.md §5) that decides which files the run opens. Checking it here keeps that
+    off prompt discipline alone (§8). Returns an error string, or None when the pointer is
+    usable.
+    """
+    pointer = os.path.join(base_dir, "reports", "sast", "latest.json")
+    if not os.path.isfile(pointer):
+        return (
+            "sast.report is 'latest' but reports/sast/latest.json was not found. Run the "
+            "sast skill first, or name the run directory explicitly "
+            "(sast.report: reports/sast/<run-id>). The pointer is only written under "
+            "reports/sast/, so a sast.yaml with a non-default output.directory needs the "
+            "explicit form."
+        )
+    try:
+        with open(pointer, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:  # noqa: BLE001 - surface the parse error verbatim
+        return f"reports/sast/latest.json could not be read: {exc}"
+    if not isinstance(data, dict) or not data.get("path"):
+        return "reports/sast/latest.json does not contain a 'path' entry"
+    why = _repo_relative_error(data["path"])
+    if why is not None:
+        return f"reports/sast/latest.json 'path' value {data['path']!r} {why}"
+    return None
+
+
 def _get(d, *keys, default=None):
     cur = d
     for k in keys:
@@ -104,8 +166,13 @@ def _get(d, *keys, default=None):
     return cur
 
 
-def validate(cfg: dict) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings)."""
+def validate(cfg: dict, base_dir: str | None = None) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings).
+
+    `base_dir` is the repository root the config sits in. When given, checks that need the
+    filesystem run too (currently the SAST pointer). Callers that only have a dict — the
+    tests — leave it None and get the pure form checks.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -394,6 +461,58 @@ def validate(cfg: dict) -> tuple[list[str], list[str]]:
                 "conditions)."
             )
 
+    # --- SAST handoff --------------------------------------------------------
+    # `sast.enabled: true` promises "a DAST run that carries the SAST findings". Step 0 stops
+    # the run when the artefacts are missing, incomplete, or belong to another repository;
+    # what is checked HERE is only the static form of the reference, so a path that could
+    # never be safe is refused before anything reads it (safety-core.md §8: safety must not
+    # rest on prompt discipline alone). The conversion rules live in
+    # skills/dast/references/sast-handoff.md, not in this file.
+    sast = _get(cfg, "sast", default={})
+    if sast is None:
+        sast = {}
+    if not isinstance(sast, dict):
+        errors.append("sast must be a mapping (keys: enabled, report)")
+    else:
+        # Same fail-open trap as safety.allow_production: a quoted "false" is truthy, which
+        # would silently turn the handoff on (or off) against the author's intent.
+        raw_enabled = sast.get("enabled", False)
+        if raw_enabled is not None and not isinstance(raw_enabled, bool):
+            errors.append(
+                f"sast.enabled must be a boolean (true/false), got {raw_enabled!r}. "
+                f"A quoted string like \"false\" is truthy."
+            )
+        sast_enabled = raw_enabled is True
+
+        report = sast.get("report", "latest")
+        if report is None:
+            report = "latest"
+        if not isinstance(report, str):
+            errors.append(f"sast.report must be a string, got {type(report).__name__}")
+        elif report.strip().lower() != "latest":
+            why = _repo_relative_error(report)
+            if why is not None:
+                errors.append(f"sast.report {report!r} {why}")
+        elif sast_enabled and base_dir is not None:
+            why = _sast_pointer_error(base_dir)
+            if why is not None:
+                errors.append(why)
+
+        unknown = sorted(set(sast) - {"enabled", "report"})
+        if unknown:
+            warnings.append(
+                f"sast has unrecognised key(s) {unknown}; only 'enabled' and 'report' are "
+                f"read. How the artefacts are used is methodology and lives in "
+                f"references/sast-handoff.md, not in the config."
+            )
+
+        if sast_enabled and not _get(cfg, "target", "source_roots"):
+            warnings.append(
+                "sast.enabled is true but target.source_roots is not set; step 1 still "
+                "enumerates the attack surface itself (the attack map augments it, it does "
+                "not replace it)."
+            )
+
     # --- exclude path form ---------------------------------------------------
     exclude_paths = _get(cfg, "exclude", "paths", default=[]) or []
     if isinstance(exclude_paths, list):
@@ -430,7 +549,7 @@ def main(argv=None) -> int:
             print(f"ERROR: {load_err}", file=sys.stderr)
         return 2
 
-    errors, warnings = validate(cfg)
+    errors, warnings = validate(cfg, base_dir=os.path.dirname(os.path.abspath(args.config)) or ".")
     valid = not errors
     result = {"valid": valid, "config": args.config, "errors": errors, "warnings": warnings}
 

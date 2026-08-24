@@ -347,3 +347,120 @@ def test_autostart_non_bool_fails():
     cfg = _valid_cfg()
     cfg["zap"]["autostart"] = "yes"
     assert any("autostart" in e for e in _errors(cfg))
+
+
+# --- SAST handoff (sast.enabled / sast.report) --------------------------------------------
+# The run-time stop conditions (missing artefacts, wrong repository) belong to step 0. What is
+# tested here is the entry-side form check: a reference that could never be safe is refused
+# before anything reads it.
+
+
+def test_sast_defaults_are_accepted():
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": False}
+    assert _errors(cfg) == []
+
+
+def test_sast_explicit_run_directory_is_accepted():
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "reports/sast/20260820-004654-90d8b8"}
+    assert _errors(cfg) == []
+
+
+def test_sast_report_escaping_the_repo_fails():
+    """`..` would let the run read another target's SAST results while looking normal."""
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "../other-repo/reports/sast/x"}
+    assert any("sast.report" in e and ".." in e for e in _errors(cfg))
+
+
+def test_sast_report_absolute_path_fails():
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "/var/tmp/sast-run"}
+    assert any("sast.report" in e and "absolute" in e for e in _errors(cfg))
+
+
+def test_sast_report_url_fails():
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "https://example.com/attack-map.md"}
+    assert any("sast.report" in e and "URL" in e for e in _errors(cfg))
+
+
+def test_sast_enabled_must_be_a_real_bool():
+    """Same fail-open trap as safety.allow_production: a quoted "false" is truthy."""
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": "false"}
+    assert any("sast.enabled must be a boolean" in e for e in _errors(cfg))
+
+
+def test_sast_method_keys_are_warned_not_accepted_silently():
+    """How the artefacts are used is methodology (sast-handoff.md), never a config knob."""
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "latest", "use_attack_map": True}
+    errors, warnings = validate_config.validate(cfg)
+    assert errors == []
+    assert any("use_attack_map" in w for w in warnings)
+
+
+def test_sast_report_home_or_variable_expansion_fails():
+    """`~/x` and `$HOME/x` are absolute once anything expands them, and expansion happens
+    outside the validator. Refusing the literal form is the only place the check still bites.
+    """
+    for value in ("~/sast-run", "$HOME/sast-run", "%APPDATA%/sast-run"):
+        cfg = _valid_cfg()
+        cfg["sast"] = {"enabled": True, "report": value}
+        assert any("sast.report" in e for e in _errors(cfg)), value
+
+
+def test_sast_report_must_name_a_run_directory():
+    for value in ("", "  ", "."):
+        cfg = _valid_cfg()
+        cfg["sast"] = {"enabled": True, "report": value}
+        assert any("sast.report" in e for e in _errors(cfg)), repr(value)
+
+
+def _pointer_errors(tmp_path, pointer_text):
+    """Run validate() with a real base_dir and an optional reports/sast/latest.json."""
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "latest"}
+    if pointer_text is not None:
+        d = tmp_path / "reports" / "sast"
+        d.mkdir(parents=True)
+        (d / "latest.json").write_text(pointer_text, encoding="utf-8")
+    errors, _ = validate_config.validate(cfg, base_dir=str(tmp_path))
+    return errors
+
+
+def test_sast_latest_pointer_missing_is_refused(tmp_path):
+    """`latest` promises a resolvable run. Failing silently here is how a run ends up with no
+    SAST denominator while the report still looks normal."""
+    assert any("latest.json" in e for e in _pointer_errors(tmp_path, None))
+
+
+def test_sast_latest_pointer_escaping_the_repo_is_refused(tmp_path):
+    """The pointer lives inside the target repository, so its contents are target-side data
+    that decides which files the run opens (safety-core.md §5/§8)."""
+    errors = _pointer_errors(tmp_path, '{"run_id": "x", "path": "../elsewhere/reports/sast/x"}')
+    assert any("latest.json" in e and ".." in e for e in errors)
+
+
+def test_sast_latest_pointer_without_path_is_refused(tmp_path):
+    assert any("latest.json" in e for e in _pointer_errors(tmp_path, '{"run_id": "x"}'))
+
+
+def test_sast_latest_pointer_unparsable_is_refused(tmp_path):
+    assert any("latest.json" in e for e in _pointer_errors(tmp_path, "{not json"))
+
+
+def test_sast_latest_pointer_valid_passes(tmp_path):
+    errors = _pointer_errors(
+        tmp_path, '{"run_id": "20260820-004654-90d8b8", "path": "reports/sast/20260820-004654-90d8b8"}'
+    )
+    assert [e for e in errors if "sast" in e or "latest.json" in e] == []
+
+
+def test_pointer_check_is_skipped_without_a_base_dir():
+    """Callers holding only a dict get the pure form checks, not filesystem ones."""
+    cfg = _valid_cfg()
+    cfg["sast"] = {"enabled": True, "report": "latest"}
+    assert _errors(cfg) == []

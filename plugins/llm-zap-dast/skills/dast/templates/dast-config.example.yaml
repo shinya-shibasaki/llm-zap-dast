@@ -79,6 +79,18 @@ authentication:
   # （対話確認は取らない）。
   active_scan: true      # 既定ON
 
+# SAST スキル（/llm-zap-dast:sast）の結果を使って診断する。
+# enabled: true は「SAST の知見込みの DAST」という約束。成果物が見つからない・欠けている・
+# 別リポジトリのものだった場合は、未使用へ degrade せず run を停止する（authentication と同じ論法）。
+# 読むのは <report>/attack-map.md と <report>/report-04.md の2本だけ（他のファイルは読まない）。
+# 取り込み方の規則は references/sast-handoff.md が権威。ここには「対象ごとに変わる事実」だけを書く。
+sast:
+  enabled: false
+  # latest = reports/sast/latest.json が指す run を使う（SAST が既定の出力先を使っている場合）。
+  # SAST 側で output.directory を変えているなら、run ディレクトリを明示する
+  # （例: reports/sast/20260820-004654-90d8b8）。値はリポジトリ内の相対パスのみ。
+  report: latest
+
 scan:
   # spider / playwright は予約キー。Traditional Spider（工程3）は常時実行し、Playwright（工程4/6）の
   # 可否は工程0の playwright チェック結果で決まるため、false にしても工程はスキップされない。

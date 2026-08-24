@@ -51,6 +51,13 @@ authentication:
   # 認証付き Active Scan の追加ゲート。scan.active_scan と AND、かつ工程5のゲート条件充足で実行。
   active_scan: true      # 既定ON。scan.active_scan と AND。対話確認は取らない
 
+# SAST スキルの結果を取り込む（攻撃面と仮説の補強。工程1の置換ではない）。
+# true は「SAST の知見込みの DAST」という約束＝成果物が使えなければ run を停止する。
+# 読むのは <report>/attack-map.md と <report>/report-04.md の2本だけ。
+sast:
+  enabled: false
+  report: latest         # latest（reports/sast/latest.json 経由）| reports/sast/<run-id>
+
 scan:
   # spider / playwright は予約キー。Spider（工程3）は常時実行し、Playwright（工程4/6）の可否は
   # 工程0の playwright チェックで決まるので、false にしても工程はスキップされない。
