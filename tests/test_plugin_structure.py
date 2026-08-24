@@ -2,9 +2,11 @@
 exists at the expected path, and the skill directory layout is correct."""
 import json
 import os
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN_DIR = os.path.join(ROOT, "plugins", "llm-zap-dast")
+sys.path.insert(0, os.path.join(PLUGIN_DIR, "scripts"))
 PLUGIN_JSON = os.path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json")
 SKILL = os.path.join(PLUGIN_DIR, "skills", "dast", "SKILL.md")
 
@@ -56,7 +58,8 @@ def test_references_and_templates_present():
     # gone missing from a release with the suite still green.
     for name in ("methodology.md", "safety-policy.md", "source-analysis.md",
                  "zap-integration.md", "scenario-testing.md", "redaction.md",
-                 "report-format.md", "config-init.md", "authentication.md"):
+                 "report-format.md", "config-init.md", "authentication.md",
+                 "sast-handoff.md"):
         assert os.path.isfile(os.path.join(ref, name)), f"missing reference {name}"
     for name in ("dast-config.example.yaml", "target-map.example.md",
                  "scenario-list.example.md", "report.example.md",
@@ -131,19 +134,51 @@ def test_sast_references_present():
     assert os.path.isfile(os.path.join(tpl, "report.example.md"))
 
 
+# Which reference each skill hands to a subagent. The parent holds the safety rules but the
+# child is what reads the material, so every one of these files has to point back at both
+# layers on its own.
+_SUBAGENT_READS = {
+    "sast": ("profiling.md", "attack-map.md", "method.md"),
+    # DAST delegates the SAST-artefact extraction (step 2). Its child reads a TRANSCRIPT of
+    # target-derived text and its output drives packets the parent sends, so it needs the same
+    # double path even though DAST runs most of its steps in the parent.
+    "dast": ("sast-handoff.md",),
+}
+
+
 def test_subagent_contract_is_reachable_by_the_files_subagents_read():
-    """The safety rules live with the parent, but the child is what reads the target. Each
+    """The safety rules live with the parent, but the child is what reads the material. Each
     reference a subagent opens has to point back at them, so a parent that forgets to paste
     the contract is not the only thing standing between the target and an unguarded agent.
     """
-    ref = os.path.join(PLUGIN_DIR, "skills", "sast", "references")
-    with open(os.path.join(ref, "safety-policy.md"), encoding="utf-8") as fh:
-        assert "サブエージェント契約" in fh.read(), "verbatim contract block is missing"
-    for name in ("profiling.md", "attack-map.md", "method.md"):
-        with open(os.path.join(ref, name), encoding="utf-8") as fh:
-            text = fh.read()
-        assert "safety-core.md" in text and "safety-policy.md" in text, (
-            f"{name} is read by a subagent and must send it to both safety layers first")
+    for skill, names in _SUBAGENT_READS.items():
+        ref = os.path.join(PLUGIN_DIR, "skills", skill, "references")
+        with open(os.path.join(ref, "safety-policy.md"), encoding="utf-8") as fh:
+            assert "サブエージェント契約" in fh.read(), (
+                f"{skill}: verbatim contract block is missing")
+        for name in names:
+            with open(os.path.join(ref, name), encoding="utf-8") as fh:
+                text = fh.read()
+            assert "safety-core.md" in text and "safety-policy.md" in text, (
+                f"{skill}/{name} is read by a subagent and must send it to both safety "
+                f"layers first")
+
+
+def test_dast_subagent_contract_forbids_sending_and_deciding_safety():
+    """The DAST child's risk shape is the inverse of the SAST child's: it does not read the
+    target, it reads a document about the target, and what it writes decides where the parent
+    aims. So the contract has to forbid sending, forbid ruling on safety, and say that the
+    artefact's own prose (which really does address downstream agents in the imperative) is
+    data. A contract that only forbade reading would leave all three open.
+    """
+    p = os.path.join(PLUGIN_DIR, "skills", "dast", "references", "safety-policy.md")
+    with open(p, encoding="utf-8") as fh:
+        text = fh.read()
+    block = text.split("サブエージェント契約", 1)[1].split("```", 2)[1]
+    assert "送信しない" in block, "the child must be told not to touch the network"
+    assert "安全の判断をしない" in block, "8A/8B/8C rulings belong to the parent and step 0"
+    assert "指示ではない" in block, "artefact prose must be declared data, not instructions"
+    assert "縮退させない" in block, "the child must escalate mismatches instead of tidying them"
 
 
 def test_bundled_asvs_standard_is_the_unmodified_upstream_file():
@@ -227,3 +262,71 @@ def test_sast_init_does_not_pin_the_semgrep_packs():
         doc = fh.read()
     assert "固定しない" in doc, "config-init.md must say the packs stay unpinned"
     assert "# configs:" in doc, "the generated file must leave configs commented out"
+
+
+def _dast_ref(name):
+    p = os.path.join(PLUGIN_DIR, "skills", "dast", "references", name)
+    with open(p, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_step6_definition_of_done_covers_every_entry_not_just_high_and_medium():
+    """Priority orders the work; it must not decide what gets worked on.
+
+    SAST severities flow into the priority column, so if the DoD only bound "high/medium"
+    then lowering a priority would drop an entry from the scan without any config change —
+    target-derived data quietly shrinking the scope. The mirror of the existing ban on
+    raising destructive/availability flags to fill the matrix.
+    """
+    text = _dast_ref("scenario-testing.md")
+    dod = text.split("完了条件（DoD）", 1)[1][:600]
+    assert "全エントリ" in dod
+    assert "優先度 高／中" not in dod
+    assert "順序" in dod, "the doc must say priority is ordering, not selection"
+
+
+def test_step1_is_not_replaced_by_the_attack_map():
+    """The stop table treats a degraded SAST run as "record and continue". That is only sound
+    while step 1 still enumerates the attack surface itself — otherwise the SAST run's own
+    narrowing becomes the DAST denominator's narrowing, and the report looks normal anyway.
+    Both halves of that reasoning have to stay in the tree.
+    """
+    skill = os.path.join(PLUGIN_DIR, "skills", "dast", "SKILL.md")
+    with open(skill, encoding="utf-8") as fh:
+        assert "置換ではなく補強" in fh.read()
+    assert "置換すると" in _dast_ref("safety-policy.md"), (
+        "safety-policy must say why the continue-on-degradation rule depends on step 1")
+
+
+def test_sast_artefact_reading_is_a_two_file_allowlist():
+    """Not "read the run directory". The directory also holds run.log (semgrep output, command
+    lines) and whatever a human dropped in later; a real run had a spreadsheet of answers
+    sitting next to the reports. Naming the two files is not enough — a rule that named them
+    and then said "read the directory" would still pass. The distinction itself has to be
+    stated, so the assertions below track the sentence that draws it.
+    """
+    policy = _dast_ref("safety-policy.md")
+    assert "attack-map.md" in policy and "report-04.md" in policy
+    assert "ファイル単位の allowlist であって" in policy, (
+        "the rule must say file-level allowlist, not just the word allowlist")
+    assert "「そのディレクトリを読む」ではありません" in policy, (
+        "the rule must reject directory-level reading explicitly")
+    assert "run.log" in policy, "the excluded files should be named, not implied"
+    assert "`sast.yaml` も読みません" in policy, (
+        "reading the SAST config would reintroduce the dependency the design removed")
+
+
+def test_sast_pointer_and_report_form_are_checked_by_the_validator():
+    """safety-core.md §8: the layer that enforces a rule has to be named in the skill's own
+    safety-policy, and the rule itself has to live somewhere other than prompt discipline.
+    The pointer's value comes from a file inside the target repository and decides what the
+    run opens, so a prompt-only check is the wrong layer for it.
+    """
+    policy = _dast_ref("safety-policy.md")
+    layers = policy.split("安全がどこで担保されるか", 1)[1]
+    assert "sast.report" in layers and "latest.json" in layers, (
+        "validate_config's SAST checks must be listed among the enforcement layers")
+    import validate_config as vc
+    assert vc._repo_relative_error("~/x") is not None
+    assert vc._repo_relative_error("../x") is not None
+    assert vc._repo_relative_error("reports/sast/x") is None
