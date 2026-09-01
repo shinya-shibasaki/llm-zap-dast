@@ -27,7 +27,7 @@ MIN_PY = (3, 8)
 # Firefox is a PREREQUISITE, not an option: ZAP launches it through Selenium for the Ajax
 # Spider, the DOM XSS active scan rule, Browser Based Authentication and the client add-on.
 # Playwright's Chromium does NOT substitute — ZAP starts a browser from its own process and
-# never looks at ~/.cache/ms-playwright. Checked unconditionally (not gated on
+# never looks at Playwright's browser cache (see _browsers_dir). Checked unconditionally (not gated on
 # scan.ajax_spider) because the DOM XSS rule and BBA need it regardless of that setting.
 FIREFOX_BINARIES = ("firefox", "firefox-esr")
 FIREFOX_INSTALL_HINT = (
@@ -180,8 +180,21 @@ PLAYWRIGHT_PROBE = (
 
 
 def _browsers_dir():
-    return os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.expanduser(
-        "~/.cache/ms-playwright")
+    """Where `playwright install` puts browsers, per platform.
+
+    PLAYWRIGHT_BROWSERS_PATH wins when set (Playwright's own override; this plugin never
+    sets it). The fallbacks are Playwright's per-platform defaults — hardcoding the Linux
+    one made macOS report "package importable, no browsers" for a perfectly good install,
+    and because step 4 is fail-soft that false warn silently costs coverage.
+    """
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        return env
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Caches/ms-playwright")
+    if sys.platform == "win32":
+        return os.path.join(os.path.expanduser("~"), "AppData", "Local", "ms-playwright")
+    return os.path.expanduser("~/.cache/ms-playwright")
 
 
 def candidate_interpreters():

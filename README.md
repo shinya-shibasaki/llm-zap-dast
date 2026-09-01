@@ -122,8 +122,8 @@ semgrep 無しでも LLM の精読だけでレポートは書けてしまいま�
 | **Firefox**（システムにインストール） | **ZAP** が Selenium 経由で起動 | Ajax Spider、Active Scan の DOM XSS ルール、Browser Based Authentication（認証の primary 方式）、client アドオン |
 | **Chromium**（Playwright管理） | **プラグイン**が Playwright 経由で起動 | 工程4（カバレッジ補完）、工程6（シナリオ診断のブラウザ操作） |
 
-ZAPは自前のプロセスからブラウザを起動するため、`~/.cache/ms-playwright` にある Chromium は
-参照しません。Firefox が無い状態でも工程0〜工程3のSpiderまでは進むため、**Ajax Spider に到達して
+ZAPは自前のプロセスからブラウザを起動するため、Playwright管理下（`~/.cache/ms-playwright` など。
+置き場はOSごとに異なり `PLAYWRIGHT_BROWSERS_PATH` で変えられる）の Chromium は参照しません。Firefox が無い状態でも工程0〜工程3のSpiderまでは進むため、**Ajax Spider に到達して
 初めて Selenium の例外で失敗**します。さらに **Active Scan の DOM XSS ルールは警告ログを残すだけで
 黙ってスキップ**され、レポート上は「Active Scan 実行済み」と見えてしまいます。このため
 `check_environment.py`（工程0）が Firefox の有無を前提条件として検査します。

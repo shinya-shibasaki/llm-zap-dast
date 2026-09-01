@@ -97,6 +97,30 @@ def test_venv_and_system_python_are_probed_separately(monkeypatch, tmp_path):
     assert str(system / "python3") in probed
 
 
+def test_browsers_dir_follows_the_platform_default(monkeypatch):
+    """Playwright's default cache is per-platform. Hardcoding the Linux path made a healthy
+    macOS install look browser-less, and step 4 being fail-soft turned that into silently
+    lost coverage instead of an error."""
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setenv("HOME", "/home/u")
+    monkeypatch.setattr(check_environment.sys, "platform", "darwin")
+    assert check_environment._browsers_dir().endswith("/Library/Caches/ms-playwright")
+    monkeypatch.setattr(check_environment.sys, "platform", "linux")
+    assert check_environment._browsers_dir().endswith("/.cache/ms-playwright")
+    monkeypatch.setattr(check_environment.sys, "platform", "win32")
+    assert check_environment._browsers_dir().endswith(os.path.join(
+        "AppData", "Local", "ms-playwright"))
+
+
+def test_browsers_dir_env_var_overrides_every_platform(monkeypatch):
+    """The plugin never sets PLAYWRIGHT_BROWSERS_PATH; when the operator's environment does,
+    it wins — that is Playwright's own contract."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw")
+    for plat in ("darwin", "linux", "win32"):
+        monkeypatch.setattr(check_environment.sys, "platform", plat)
+        assert check_environment._browsers_dir() == "/opt/pw"
+
+
 def test_playwright_found_reports_the_working_interpreter(monkeypatch, tmp_path):
     browsers = tmp_path / "ms-playwright"
     (browsers / "chromium-1228").mkdir(parents=True)
